@@ -7,10 +7,31 @@ on:
       - ".github/workflows/test.yml"
 
 jobs:
+  generate_lock:
+    name: Generate Cargo.lock
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+        with:
+          fetch-depth: 1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - name: Generate Cargo.lock
+        run: cargo generate-lockfile
+      - name: Upload Cargo.lock
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: lockfile
+          path: Cargo.lock
   test_miri:
+    needs: generate_lock
     name: Miri Unit Tests
     uses: ./.github/workflows/test_miri.yml
   test:
+    needs: generate_lock
     name: ${{ matrix.platform.target }}
     runs-on: ${{ matrix.platform.runs-on }}
     strategy:
@@ -48,10 +69,29 @@ jobs:
         toolchain:
           - stable
     steps:
+      - name: Install Protoc
+        id: protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Set `{PROTOC,PROTOC_PATH}` env
+        run: |
+          tailing=""
+          if [[ "${{ matrix.platform.runs-on }}" == "windows-latest" ]]; then
+            tailing=".exe"
+          fi
+          echo "PROTOC_PATH=${{ steps.protoc.outputs.path }}" >> ${{ github.env }}
+          echo "PROTOC=${{ steps.protoc.outputs.path }}/bin/protoc$tailing" >> ${{ github.env }}
+        shell: bash
       - name: Checkout the repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
         with:
           fetch-depth: 1
+      - name: Download Cargo.lock
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: lockfile
+          path: .
       - name: Run Tests
         uses: houseabsolute/actions-rust-cross@v1
         with:
