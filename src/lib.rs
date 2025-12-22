@@ -21,7 +21,7 @@
 //!     }
 //!     // expect: domain_keyword: ["fitbit", "google"]
 //!     // change the `Some(&[])` to something else can alter behavier,
-//!     // see crate::dlc::Entries
+//!     // see crate::Entries
 //!     println!("{:?}", entries.flatten(BASE, Some(&[])).unwrap().dump())
 //! }
 //! ```
@@ -72,7 +72,7 @@ impl Display for DomainKind {
 pub struct Domain {
     pub kind: DomainKind,
     pub base: Rc<str>,
-    pub value: Rc<str>,
+    pub value: Box<str>,
     pub attrs: Box<[Rc<str>]>,
 }
 
@@ -198,7 +198,7 @@ fn test_parse_line_combinations() {
 
                 let expected_domain = Some(Domain {
                     kind: *kind,
-                    base: (*base).into(),
+                    base: BasePool::base(base),
                     value: "example.com".into(),
                     attrs: attrs.iter().map(|s| AttrPool::attr(s)).collect(),
                 });
@@ -251,6 +251,14 @@ impl Entries {
         })
     }
 
+    fn set_domains(&mut self, domains: Vec<Domain>) {
+        self.domains = Some(domains).filter(|i| !i.is_empty());
+    }
+
+    fn set_includes(&mut self, includes: VecDeque<Rc<str>>) {
+        self.includes = Some(includes).filter(|i| !i.is_empty());
+    }
+
     /// <div class="warning">
     /// Warning:
     /// This method assumes the include graph to be acyclic.
@@ -261,21 +269,23 @@ impl Entries {
         let entries = Self::parse(&self.base, content)?;
 
         if let Some(domains) = entries.domains {
-            if let Some(mut d) = self.domains.take() {
-                d.extend(domains);
-                self.domains = Some(d);
-            } else {
-                self.domains = Some(domains);
-            }
+            match self.domains.take() {
+                Some(mut d) => {
+                    d.extend(domains);
+                    self.set_domains(d);
+                }
+                None => self.set_domains(domains),
+            };
         };
 
         if let Some(includes) = entries.includes {
-            if let Some(mut d) = self.includes.take() {
-                d.extend(includes);
-                self.includes = Some(d);
-            } else {
-                self.includes = Some(includes);
-            }
+            match self.includes.take() {
+                Some(mut i) => {
+                    i.extend(includes);
+                    self.set_includes(i);
+                }
+                None => self.set_includes(includes),
+            };
         };
 
         Some(())
@@ -317,12 +327,10 @@ impl Entries {
     ///
     /// See [`Entries`] for details.
     pub fn next_include(&mut self) -> Option<Rc<str>> {
-        if let Some(mut includes) = self.includes.take() {
-            let one = includes.pop_front();
-            self.includes = Some(includes);
-            return one;
-        }
-        None
+        let mut includes = self.includes.take()?;
+        let one = includes.pop_front();
+        self.set_includes(includes);
+        one
     }
 
     /// Flatten domains by `base` with optional attribute filters.
@@ -351,7 +359,7 @@ impl Entries {
         let inner = self.domains.take()?;
         let mut flattened = Vec::with_capacity(inner.len());
 
-        let rest: Vec<_> = inner
+        let domains: Vec<_> = inner
             .into_iter()
             .filter_map(|candidate| {
                 if base != &*candidate.base {
@@ -382,7 +390,7 @@ impl Entries {
             })
             .collect();
 
-        self.domains = Some(rest).filter(|r| !r.is_empty());
+        self.set_domains(domains);
 
         Some(FlatDomains(flattened)).filter(|f| !f.0.is_empty())
     }
@@ -424,20 +432,21 @@ fn test_parse_entries_basic() {
 /// Domain entires dumped by [`FlatDomains::dump`]
 #[derive(Debug)]
 pub struct Dump {
-    pub domain_suffix: Box<[Rc<str>]>,
-    pub domain: Box<[Rc<str>]>,
-    pub domain_keyword: Box<[Rc<str>]>,
-    pub domain_regex: Box<[Rc<str>]>,
+    pub domain_suffix: Box<[Box<str>]>,
+    pub domain: Box<[Box<str>]>,
+    pub domain_keyword: Box<[Box<str>]>,
+    pub domain_regex: Box<[Box<str>]>,
 }
 
 /// Domain entries flattened by [`Entries::flatten`]
 ///
-/// This struct's inner [`Vec`]'s length will not be 0, if it did, open an issue.
+/// This struct's inner [`Vec`] will always not [`Vec::is_empty`]
 pub struct FlatDomains(Vec<Domain>);
 
 impl FlatDomains {
     pub fn dump(self) -> Dump {
         let mut domains: Vec<Domain> = self.0;
+        debug_assert!(!domains.is_empty());
 
         domains.sort_by(|a, b| {
             b.kind

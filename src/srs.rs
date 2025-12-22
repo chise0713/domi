@@ -1,7 +1,5 @@
 //! Adapter for [sing-box rule-set source format](https://sing-box.sagernet.org/configuration/rule-set/source-format)
 
-use std::rc::Rc;
-
 use serde::Serialize;
 
 use crate::FlatDomains;
@@ -20,10 +18,10 @@ pub struct RuleSet {
 #[derive(Debug, Default, Serialize, Clone)]
 #[serde_with::skip_serializing_none]
 pub struct Rule {
-    pub domain_suffix: Option<Box<[Rc<str>]>>,
-    pub domain: Option<Box<[Rc<str>]>>,
-    pub domain_keyword: Option<Box<[Rc<str>]>>,
-    pub domain_regex: Option<Box<[Rc<str>]>>,
+    pub domain_suffix: Option<Box<[Box<str>]>>,
+    pub domain: Option<Box<[Box<str>]>>,
+    pub domain_keyword: Option<Box<[Box<str>]>>,
+    pub domain_regex: Option<Box<[Box<str>]>>,
 }
 
 impl From<FlatDomains> for Rule {
