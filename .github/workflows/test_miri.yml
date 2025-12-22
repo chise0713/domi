@@ -2,9 +2,6 @@ name: Miri Unit Tests
 
 on:
   workflow_call:
-  push:
-    paths:
-      - ".github/workflows/test_miri.yml"
 
 jobs:
   test:
@@ -18,12 +15,21 @@ jobs:
       - name: Install Rust toolchain with Miri
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          components: miri
+          components: miri, rust-src
           toolchain: nightly
+      - name: Install Protoc
+        uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+        with:
+          repo-token: ${{ github.token }}
       - name: Cache cargo registry, index, and targets
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           prefix-key: "cargo-miri"
+      - name: Download Cargo.lock
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: lockfile
+          path: .
       - name: Run Miri tests
         run: |
           RUST_BACKTRACE=1 \
