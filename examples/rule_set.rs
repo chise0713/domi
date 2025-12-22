@@ -16,7 +16,7 @@ fn main() {
         entries.parse_extend(include.lines()).unwrap();
     }
     // change the `Some(&[AttrFilter::Lacks("attr2")])` to something else can alter behavier,
-    // see crate::dlc::Entries
+    // see crate::Entries
     let rule = Rule::from(
         entries
             .flatten(BASE, Some(&[AttrFilter::Lacks("attr2")]))

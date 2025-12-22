@@ -19,7 +19,7 @@ fn main() {
     }
     // expect: domain_keyword: ["fitbit", "google"]
     // change the `Some(&[])` to something else can alter behavier,
-    // see crate::dlc::Entries
+    // see crate::Entries
     println!("{:?}", entries.flatten(BASE, Some(&[])).unwrap().dump())
 }
 ```
