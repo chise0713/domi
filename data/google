@@ -1,0 +1,5 @@
+# if you need to change this file, remember to also change expected behavier in examples/
+include:fitbit
+
+domain:google.com @attr1 @attr2
+keyword:google
