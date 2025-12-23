@@ -18,7 +18,7 @@ fn main() {
     let flattened = entries
         .flatten(BASE, Some(&[AttrFilter::Lacks("attr2")]))
         .unwrap();
-    let geosite = GeoSiteList::from(flattened);
+    let geosite = GeoSiteList::from_iter([flattened]);
     let out = geosite.encode_to_vec();
     println!("{:?}", String::from_utf8_lossy(&out));
 }

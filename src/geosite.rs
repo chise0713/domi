@@ -45,14 +45,20 @@ impl From<crate::Domain> for proto::Domain {
     }
 }
 
-impl From<FlatDomains> for GeoSiteList {
+impl From<FlatDomains> for GeoSite {
     fn from(fd: FlatDomains) -> Self {
         let domains = fd.0;
-        GeoSiteList {
-            entry: Vec::from([GeoSite {
-                country_code: domains[0].base.clone().to_string(), // it's flattened
-                domain: domains.into_iter().map(proto::Domain::from).collect(),
-            }]),
+        GeoSite {
+            country_code: domains[0].base.clone().to_string(), // it's flattened
+            domain: domains.into_iter().map(proto::Domain::from).collect(),
+        }
+    }
+}
+
+impl FromIterator<FlatDomains> for GeoSiteList {
+    fn from_iter<T: IntoIterator<Item = FlatDomains>>(iter: T) -> Self {
+        Self {
+            entry: iter.into_iter().map(GeoSite::from).collect(),
         }
     }
 }

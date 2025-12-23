@@ -440,7 +440,7 @@ pub struct Dump {
 
 /// Domain entries flattened by [`Entries::flatten`]
 ///
-/// This struct's inner [`Vec`] will always not [`Vec::is_empty`]
+/// This struct's inner [`Vec`] will always not be [`Vec::is_empty`]
 pub struct FlatDomains(Vec<Domain>);
 
 impl FlatDomains {
@@ -510,8 +510,9 @@ fn test_flatten_partial_domains() {
 
     let mut entries = Entries::parse(BASE, content.lines()).unwrap();
 
+    let other_base = BasePool::base("other_base");
     if let Some(domains) = entries.domains.as_mut() {
-        domains[0].base = "other_base".into();
+        domains[0].base = other_base.clone();
     }
 
     let flat = entries.flatten(BASE, None).unwrap();
@@ -522,7 +523,7 @@ fn test_flatten_partial_domains() {
 
     let remaining = entries.domains.as_ref().unwrap();
     assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].base.as_ref(), "other_base");
+    assert_eq!(remaining[0].base.as_ptr(), other_base.as_ptr());
 }
 
 #[test]
