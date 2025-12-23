@@ -5,6 +5,8 @@ on:
   push:
     paths:
       - ".github/workflows/test.yml"
+      - "**/*.rs"
+      - "**/Cargo.toml"
 
 jobs:
   generate_lock:
