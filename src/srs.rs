@@ -15,8 +15,8 @@ pub struct RuleSet {
 ///
 /// Note that the [`struct`][`Rule`] does not contain all
 /// fields for sing-box headless rule
-#[derive(Debug, Default, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[serde_with::skip_serializing_none]
+#[derive(Debug, Default, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Rule {
     pub domain_suffix: Option<Box<[Box<str>]>>,
     pub domain: Option<Box<[Box<str>]>>,
