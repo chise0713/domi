@@ -7,22 +7,22 @@
 //! ```rust,no_run
 //! use std::{fs, path::Path};
 //!
-//! use domi::Entries;
+//! use domi::{srs::Rule,Entries};
 //!
 //! const BASE: &str = "alphabet";
 //!
 //! fn main() {
 //!     let data_root = Path::new("data");
 //!     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
-//!     let mut entries = Entries::parse(BASE, content.lines()).unwrap();
+//!     let mut entries = Entries::parse(BASE, content.lines());
 //!     while let Some(i) = entries.next_include() {
 //!         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-//!         entries.parse_extend(include.lines()).unwrap();
+//!         entries.parse_extend(include.lines());
 //!     }
-//!     // expect: domain_keyword: ["fitbit", "google"]
+//!     // expect: domain_keyword: Some(["fitbit", "google"])
 //!     // change the `Some(&[])` to something else can alter behavier,
 //!     // see crate::Entries
-//!     println!("{:?}", entries.flatten(BASE, Some(&[])).unwrap().dump())
+//!     println!("{:?}", Rule::from(entries.flatten(BASE, Some(&[])).unwrap()))
 //! }
 //! ```
 
@@ -227,7 +227,7 @@ pub struct Entries {
 }
 
 impl Entries {
-    pub fn parse(base: &str, content: Lines) -> Option<Self> {
+    pub fn parse(base: &str, content: Lines) -> Self {
         let mut domains = Vec::new();
         let mut includes = VecDeque::new();
         let base = BasePool::base(base);
@@ -244,19 +244,21 @@ impl Entries {
             }
         }
 
-        Some(Self {
+        Self {
             base,
-            domains: Some(domains).filter(|d| !d.is_empty()),
-            includes: Some(includes).filter(|i| !i.is_empty()),
-        })
+            domains: (!domains.is_empty()).then_some(domains),
+            includes: (!includes.is_empty()).then_some(includes),
+        }
     }
 
+    #[inline(always)]
     fn set_domains(&mut self, domains: Vec<Domain>) {
-        self.domains = Some(domains).filter(|i| !i.is_empty());
+        self.domains = (!domains.is_empty()).then_some(domains);
     }
 
+    #[inline(always)]
     fn set_includes(&mut self, includes: VecDeque<Rc<str>>) {
-        self.includes = Some(includes).filter(|i| !i.is_empty());
+        self.includes = (!includes.is_empty()).then_some(includes);
     }
 
     /// <div class="warning">
@@ -265,8 +267,8 @@ impl Entries {
     /// </div>
     ///
     /// See [`Entries`] for details.
-    pub fn parse_extend(&mut self, content: Lines) -> Option<()> {
-        let entries = Self::parse(&self.base, content)?;
+    pub fn parse_extend(&mut self, content: Lines) {
+        let entries = Self::parse(&self.base, content);
 
         if let Some(domains) = entries.domains {
             match self.domains.take() {
@@ -287,8 +289,6 @@ impl Entries {
                 None => self.set_includes(includes),
             };
         };
-
-        Some(())
     }
 
     /// Returns a snapshot iterator of current includes.
@@ -303,10 +303,10 @@ impl Entries {
     /// ```rust,no_run
     /// # use std::fs;
     /// # use domi::Entries;
-    /// # let mut entries = Entries::parse("", "".lines()).unwrap();
+    /// # let mut entries = Entries::parse("", "".lines());
     /// while let Some(i) = entries.drain_includes().next() {
     ///     let include = fs::read_to_string(i.as_ref()).unwrap();
-    ///     entries.parse_extend(include.lines()).unwrap();
+    ///     entries.parse_extend(include.lines());
     /// }
     /// ```
     ///
@@ -333,7 +333,8 @@ impl Entries {
         one
     }
 
-    /// Flatten domains by `base` with optional attribute filters.
+    /// Flatten domains by `base` with optional attribute filters,
+    /// then **[`sort`][slice::sort]** and **[`dedup`][Vec::dedup]** the selected domains.
     ///
     /// Selection rules:
     /// - `attr_filters == None`  
@@ -392,7 +393,17 @@ impl Entries {
 
         self.set_domains(domains);
 
-        Some(FlatDomains(flattened)).filter(|f| !f.0.is_empty())
+        if flattened.is_empty() {
+            return None;
+        };
+
+        flattened.sort_by(|a, b| {
+            b.kind
+                .cmp(&a.kind) // kind reversed for `domains.split_off()`
+                .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
+        });
+        flattened.dedup();
+        Some(FlatDomains(flattened))
     }
 }
 
@@ -414,7 +425,7 @@ fn test_parse_entries_basic() {
             include:example # trailing comment
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines()).unwrap();
+    let mut entries = Entries::parse(BASE, content.lines());
 
     let domains = entries.domains.take().unwrap();
     assert_eq!(domains.len(), 2);
@@ -429,56 +440,10 @@ fn test_parse_entries_basic() {
     assert_eq!(includes[0].as_ref(), "example");
 }
 
-/// Domain entires dumped by [`FlatDomains::dump`]
-#[derive(Debug)]
-pub struct Dump {
-    pub domain_suffix: Box<[Box<str>]>,
-    pub domain: Box<[Box<str>]>,
-    pub domain_keyword: Box<[Box<str>]>,
-    pub domain_regex: Box<[Box<str>]>,
-}
-
 /// Domain entries flattened by [`Entries::flatten`]
 ///
 /// This struct's inner [`Vec`] will always not be [`Vec::is_empty`]
-pub struct FlatDomains(Vec<Domain>);
-
-impl FlatDomains {
-    pub fn dump(self) -> Dump {
-        let mut domains: Vec<Domain> = self.0;
-        debug_assert!(!domains.is_empty());
-
-        domains.sort_by(|a, b| {
-            b.kind
-                .cmp(&a.kind) // kind reversed for `domains.split_off()`
-                .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
-        });
-        domains.dedup();
-
-        let mut next = |kind: DomainKind| {
-            let idx = domains.partition_point(|d| d.kind != kind);
-            domains.split_off(idx)
-        };
-
-        let suffix = next(DomainKind::Suffix);
-        let full = next(DomainKind::Full);
-        let keyword = next(DomainKind::Keyword);
-        let regex = next(DomainKind::Regex);
-        drop(domains);
-
-        let domain_suffix = suffix.into_iter().map(|d| d.value).collect();
-        let domain = full.into_iter().map(|d| d.value).collect();
-        let domain_keyword = keyword.into_iter().map(|d| d.value).collect();
-        let domain_regex = regex.into_iter().map(|d| d.value).collect();
-
-        Dump {
-            domain_suffix,
-            domain,
-            domain_keyword,
-            domain_regex,
-        }
-    }
-}
+pub struct FlatDomains(pub(crate) Vec<Domain>);
 
 #[test]
 fn test_flatten_domains() {
@@ -488,7 +453,7 @@ fn test_flatten_domains() {
             keyword:keyword
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines()).unwrap();
+    let mut entries = Entries::parse(BASE, content.lines());
 
     let flat = entries.flatten(BASE, None).unwrap();
 
@@ -508,7 +473,7 @@ fn test_flatten_partial_domains() {
             full:full.example.com
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines()).unwrap();
+    let mut entries = Entries::parse(BASE, content.lines());
 
     let other_base = BasePool::base("other_base");
     if let Some(domains) = entries.domains.as_mut() {
@@ -533,11 +498,45 @@ fn test_dedup() {
             keyword:keyword # dedup
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines()).unwrap();
+    let mut entries = Entries::parse(BASE, content.lines());
 
     let flat = entries.flatten(BASE, None).unwrap();
 
     assert!(entries.domains.is_none());
 
-    assert_eq!(flat.dump().domain_keyword.len(), 1);
+    assert_eq!(flat.0[0].kind, DomainKind::Keyword);
+}
+
+#[cfg(test)]
+mod sort_predictable {
+    use std::array;
+
+    use crate::{Entries, FlatDomains, BASE};
+
+    const VARIANT_LEN: usize = 6;
+    const CONTENS: [&str; VARIANT_LEN] = [
+        "full:full\nkeyword:keyword\nregexp:regexp",
+        "full:full\nregexp:regexp\nkeyword:keyword",
+        "keyword:keyword\nfull:full\nregexp:regexp",
+        "keyword:keyword\nregexp:regexp\nfull:full",
+        "regexp:regexp\nfull:full\nkeyword:keyword",
+        "regexp:regexp\nkeyword:keyword\nfull:full",
+    ];
+
+    pub(crate) fn test<T, K, F, C>(mut build: F, mut cmp: C)
+    where
+        F: FnMut(FlatDomains) -> T,
+        K: Ord,
+        C: FnMut(&T) -> K,
+    {
+        let list: [T; VARIANT_LEN] = array::from_fn(|i| {
+            let domains = Entries::parse(BASE, CONTENS[i].lines())
+                .flatten(BASE, None)
+                .unwrap();
+
+            build(domains)
+        });
+
+        assert!(list.windows(2).all(|w| cmp(&w[0]) == cmp(&w[1])));
+    }
 }

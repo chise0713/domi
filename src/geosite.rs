@@ -2,12 +2,12 @@
 //! [v2ray geosite](https://github.com/v2fly/v2ray-core/blob/master/app/router/routercommon/common.proto)
 //!
 //! This module contains some `impl From<A> for B`, refer to the source file
-use std::rc::Rc;
-
 pub mod proto {
     //! Auto generated source file from `proto/geosite.proto` by [`prost`]
     include!(concat!(env!("OUT_DIR"), "/_.rs"));
 }
+
+use std::rc::Rc;
 
 use proto::{
     domain::{attribute::TypedValue, Attribute, Type},
@@ -55,10 +55,49 @@ impl From<FlatDomains> for GeoSite {
     }
 }
 
-impl FromIterator<FlatDomains> for GeoSiteList {
-    fn from_iter<T: IntoIterator<Item = FlatDomains>>(iter: T) -> Self {
-        Self {
-            entry: iter.into_iter().map(GeoSite::from).collect(),
-        }
+impl FromIterator<GeoSite> for GeoSiteList {
+    fn from_iter<T: IntoIterator<Item = GeoSite>>(iter: T) -> Self {
+        let mut entry: Vec<_> = iter.into_iter().collect();
+        entry.sort_by(|a, b| a.country_code.cmp(&b.country_code));
+        Self { entry }
     }
+}
+
+#[test]
+fn test_sort_predictable() {
+    crate::sort_predictable::test(
+        |domains| GeoSiteList::from_iter([GeoSite::from(domains)]),
+        |list| {
+            list.entry
+                .iter()
+                .map(|s| s.country_code.clone())
+                .collect::<Box<[_]>>()
+        },
+    );
+}
+
+#[test]
+fn test_from_iter() {
+    use crate::BASE;
+    const CONTENT: &str = "\
+            keyword:keyword
+            keyword:keyword # dedup
+        ";
+
+    let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
+    let flattened = entries.flatten(BASE, None).unwrap();
+    let geosite_list = GeoSiteList::from_iter([GeoSite::from(flattened)]);
+    assert_eq!(geosite_list.entry.len(), 1);
+    assert_eq!(
+        geosite_list.entry.into_iter().next().unwrap(),
+        GeoSite {
+            country_code: BASE.into(),
+            domain: [proto::Domain {
+                r#type: Type::Plain.into(),
+                value: "keyword".into(),
+                attribute: [].into()
+            }]
+            .into()
+        }
+    )
 }

@@ -10,10 +10,10 @@ const BASE: &str = "alphabet";
 fn main() {
     let data_root = Path::new("data");
     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
-    let mut entries = Entries::parse(BASE, content.lines()).unwrap();
+    let mut entries = Entries::parse(BASE, content.lines());
     while let Some(i) = entries.next_include() {
         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-        entries.parse_extend(include.lines()).unwrap();
+        entries.parse_extend(include.lines());
     }
     // change the `Some(&[AttrFilter::Lacks("attr2")])` to something else can alter behavier,
     // see crate::Entries
