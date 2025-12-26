@@ -25,9 +25,8 @@ pub struct Rule {
 }
 
 impl From<FlatDomains> for Rule {
-    fn from(fd: FlatDomains) -> Self {
-        let mut domains = fd.0;
-
+    fn from(flat: FlatDomains) -> Self {
+        let mut domains = flat.into_vec();
         let mut take = |kind: DomainKind| -> Option<Box<[Box<str>]>> {
             let idx = domains.partition_point(|d| d.kind != kind);
             let v: Box<[_]> = domains

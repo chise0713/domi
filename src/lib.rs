@@ -182,9 +182,9 @@ fn test_parse_line_combinations() {
         DomainKind::Regex,
     ];
 
-    for base in &bases {
-        for attrs in &attr_combos {
-            for kind in &kinds {
+    for base in bases {
+        for attrs in attr_combos {
+            for kind in kinds {
                 let mut line = format!("{}:example.com", kind);
                 for attr in attrs.iter() {
                     line.push_str(" @");
@@ -197,7 +197,7 @@ fn test_parse_line_combinations() {
                 };
 
                 let expected_domain = Some(Domain {
-                    kind: *kind,
+                    kind,
                     base: BasePool::base(base),
                     value: "example.com".into(),
                     attrs: attrs.iter().map(|s| AttrPool::attr(s)).collect(),
@@ -403,7 +403,7 @@ impl Entries {
                 .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
         });
         flattened.dedup();
-        Some(FlatDomains(flattened))
+        Some(FlatDomains { inner: flattened })
     }
 }
 
@@ -442,8 +442,23 @@ fn test_parse_entries_basic() {
 
 /// Domain entries flattened by [`Entries::flatten`]
 ///
-/// This struct's inner [`Vec`] will always not be [`Vec::is_empty`]
-pub struct FlatDomains(pub(crate) Vec<Domain>);
+/// # Invariants
+///
+/// While owned as [`FlatDomains`], the inner [`Vec<Domain>`][Domain] is guaranteed to be non-empty.
+///
+/// No guarantees are provided once the value is consumed.
+pub struct FlatDomains {
+    inner: Vec<Domain>,
+}
+
+impl FlatDomains {
+    /// Consumes [`self`] and returns the underlying [`Vec<Domain>`][Domain].
+    ///
+    /// This operation discards all invariants associated with [`FlatDomains`].
+    pub fn into_vec(self) -> Vec<Domain> {
+        self.inner
+    }
+}
 
 #[test]
 fn test_flatten_domains() {
@@ -459,7 +474,7 @@ fn test_flatten_domains() {
 
     assert!(entries.domains.is_none());
 
-    let flat_domains = &flat.0;
+    let flat_domains = flat.into_vec();
     assert_eq!(flat_domains.len(), 3);
     assert!(flat_domains.iter().any(|d| d.kind == DomainKind::Suffix));
     assert!(flat_domains.iter().any(|d| d.kind == DomainKind::Full));
@@ -482,7 +497,7 @@ fn test_flatten_partial_domains() {
 
     let flat = entries.flatten(BASE, None).unwrap();
 
-    let flat_domains = &flat.0;
+    let flat_domains = flat.into_vec();
     assert_eq!(flat_domains.len(), 1);
     assert_eq!(flat_domains[0].base.as_ref(), BASE);
 
@@ -500,11 +515,11 @@ fn test_dedup() {
 
     let mut entries = Entries::parse(BASE, content.lines());
 
-    let flat = entries.flatten(BASE, None).unwrap();
+    let flat = entries.flatten(BASE, None).unwrap().into_vec();
 
     assert!(entries.domains.is_none());
 
-    assert_eq!(flat.0[0].kind, DomainKind::Keyword);
+    assert_eq!(flat[0].kind, DomainKind::Keyword);
 }
 
 #[cfg(test)]
