@@ -5,7 +5,7 @@ domi provides abstractions and utilities for [domain-list-community](https://git
 ```rust
 use std::{fs, path::Path};
 
-use domi::Entries;
+use domi::{srs::Rule,Entries};
 
 const BASE: &str = "alphabet";
 
@@ -17,11 +17,10 @@ fn main() {
         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
         entries.parse_extend(include.lines());
     }
-    let rule = Rule::from(entries.flatten(BASE, Some(&[])).unwrap());
     // expect: domain_keyword: Some(["fitbit", "google"])
     // change the `Some(&[])` to something else can alter behavier,
     // see crate::Entries
-    println!("{:?}", RuleSet::from_iter([rule]));
+    println!("{:?}", Rule::from(entries.flatten(BASE, Some(&[])).unwrap()))
 }
 ```
 

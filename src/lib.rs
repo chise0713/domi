@@ -107,7 +107,7 @@ struct AttrPool;
 impl AttrPool {
     #[inline]
     fn attr(s: &str) -> Rc<str> {
-        ATTR_POOL.with(|p| p.borrow_mut().intern(s))
+        ATTR_POOL.with_borrow_mut(|p| p.intern(s))
     }
 }
 
@@ -120,7 +120,7 @@ struct BasePool;
 impl BasePool {
     #[inline]
     fn base(s: &str) -> Rc<str> {
-        BASE_POOL.with(|p| p.borrow_mut().intern(s))
+        BASE_POOL.with_borrow_mut(|p| p.intern(s))
     }
 }
 
@@ -447,6 +447,7 @@ fn test_parse_entries_basic() {
 /// While owned as [`FlatDomains`], the inner [`Vec<Domain>`][Domain] is guaranteed to be non-empty.
 ///
 /// No guarantees are provided once the value is consumed.
+#[derive(Clone)]
 pub struct FlatDomains {
     inner: Vec<Domain>,
 }
