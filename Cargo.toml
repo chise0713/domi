@@ -21,7 +21,7 @@ protobuf = ["dep:prost", "dep:prost-build"]
 
 [[example]]
 doc-scrape-examples = true
-name = "rule_set"
+name = "srs"
 required-features = ["serde"]
 
 [[example]]
@@ -45,4 +45,5 @@ prost = { version = "^0.14", optional = true }
 prost-build = { version = "^0.14", optional = true }
 
 [dev-dependencies]
+serde_json = "^1.0"
 prost = "^0.14"

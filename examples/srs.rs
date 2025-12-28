@@ -22,6 +22,7 @@ fn main() {
             .flatten(BASE, Some(&[AttrFilter::Lacks("attr2")]))
             .unwrap(),
     );
-    // expected domain_suffix: Some(["alphabet.com"]), domain_keyword: Some(["fitbit", "google"])
-    println!("{:?}", RuleSet::from_iter([rule]));
+    // expected output {"version":1,"rules":[{"domain_suffix":["alphabet.com"],"domain_keyword":["fitbit","google"]}]}
+    let rule_set = RuleSet::from_iter([rule]);
+    println!("{}", serde_json::to_string(&rule_set).unwrap());
 }
