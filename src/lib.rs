@@ -7,7 +7,7 @@
 //! ```rust,no_run
 //! use std::{fs, path::Path};
 //!
-//! use domi::{srs::Rule,Entries};
+//! use domi::{srs::Rule, Entries};
 //!
 //! const BASE: &str = "alphabet";
 //!
