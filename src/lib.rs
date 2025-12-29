@@ -17,7 +17,7 @@
 //!     let mut entries = Entries::parse(BASE, content.lines());
 //!     while let Some(i) = entries.next_include() {
 //!         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-//!         entries.parse_extend(include.lines());
+//!         entries.parse_extend(BASE, include.lines());
 //!     }
 //!     // expect: domain_keyword: Some(["fitbit", "google"])
 //!     // change the `Some(&[])` to something else can alter behavier,
@@ -32,9 +32,10 @@ pub mod geosite;
 pub mod srs;
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashSet, VecDeque},
     fmt::Display,
+    marker::PhantomData,
     rc::Rc,
     str::Lines,
 };
@@ -96,6 +97,10 @@ impl Interner {
             v
         }
     }
+
+    fn clear(&mut self) {
+        self.set.clear()
+    }
 }
 
 thread_local! {
@@ -108,6 +113,11 @@ impl AttrPool {
     #[inline]
     fn attr(s: &str) -> Rc<str> {
         ATTR_POOL.with_borrow_mut(|p| p.intern(s))
+    }
+
+    #[inline]
+    fn clear() {
+        ATTR_POOL.with_borrow_mut(|p| p.clear())
     }
 }
 
@@ -122,6 +132,41 @@ impl BasePool {
     fn base(s: &str) -> Rc<str> {
         BASE_POOL.with_borrow_mut(|p| p.intern(s))
     }
+
+    #[inline]
+    fn clear() {
+        BASE_POOL.with_borrow_mut(|p| p.clear())
+    }
+}
+
+thread_local! {
+    static POOL_USED_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+struct PoolGuard {
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl PoolGuard {
+    fn acquire() -> Self {
+        POOL_USED_COUNT.with(|c| c.set(c.get() + 1));
+        Self {
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        POOL_USED_COUNT.with(|c| {
+            let n = c.get() - 1;
+            c.set(n);
+            if n == 0 {
+                AttrPool::clear();
+                BasePool::clear();
+            }
+        });
+    }
 }
 
 /// Single parsed entry
@@ -132,7 +177,7 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn parse_line(line: &str, base: &str) -> Option<Self> {
+    pub fn parse_line(base: &str, line: &str) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             return None;
@@ -191,7 +236,7 @@ fn test_parse_line_combinations() {
                     line.push_str(attr);
                 }
 
-                let (domain, include) = match Entry::parse_line(&line, base).unwrap() {
+                let (domain, include) = match Entry::parse_line(base, &line).unwrap() {
                     Entry::Domain(d) => (Some(d), None),
                     Entry::Include(i) => (None, Some(i)),
                 };
@@ -215,25 +260,29 @@ fn test_parse_line_combinations() {
 /// This type owns all parsed domains and include directives
 /// for a given base.
 ///
+/// While an Entries value is alive, internal string intern pools are kept alive.
+/// They are automatically cleared when the last Entries is dropped on the thread.
+///
 /// ## Invariants
 ///
 /// - The include graph is assumed to be **acyclic**.
 /// - Cyclic includes are considered invalid data and are **not** checked
 ///   at runtime.
 pub struct Entries {
-    base: Rc<str>,
+    _pg: PoolGuard,
     domains: Option<Vec<Domain>>,
     includes: Option<VecDeque<Rc<str>>>,
 }
 
 impl Entries {
     pub fn parse(base: &str, content: Lines) -> Self {
+        let _pg = PoolGuard::acquire();
         let mut domains = Vec::new();
         let mut includes = VecDeque::new();
         let base = BasePool::base(base);
 
         for line in content {
-            if let Some(entry) = Entry::parse_line(line, &base) {
+            if let Some(entry) = Entry::parse_line(&base, line) {
                 match entry {
                     Entry::Domain(mut domain) => {
                         domain.base = base.clone();
@@ -245,7 +294,7 @@ impl Entries {
         }
 
         Self {
-            base,
+            _pg,
             domains: (!domains.is_empty()).then_some(domains),
             includes: (!includes.is_empty()).then_some(includes),
         }
@@ -267,8 +316,8 @@ impl Entries {
     /// </div>
     ///
     /// See [`Entries`] for details.
-    pub fn parse_extend(&mut self, content: Lines) {
-        let entries = Self::parse(&self.base, content);
+    pub fn parse_extend(&mut self, base: &str, content: Lines) {
+        let entries = Self::parse(base, content);
 
         if let Some(domains) = entries.domains {
             match self.domains.take() {
@@ -277,8 +326,8 @@ impl Entries {
                     self.set_domains(d);
                 }
                 None => self.set_domains(domains),
-            };
-        };
+            }
+        }
 
         if let Some(includes) = entries.includes {
             match self.includes.take() {
@@ -287,8 +336,8 @@ impl Entries {
                     self.set_includes(i);
                 }
                 None => self.set_includes(includes),
-            };
-        };
+            }
+        }
     }
 
     /// Returns a snapshot iterator of current includes.
@@ -303,10 +352,11 @@ impl Entries {
     /// ```rust,no_run
     /// # use std::fs;
     /// # use domi::Entries;
-    /// # let mut entries = Entries::parse("", "".lines());
+    /// # const BASE: &str = "";
+    /// # let mut entries = Entries::parse(BASE, "".lines());
     /// while let Some(i) = entries.drain_includes().next() {
     ///     let include = fs::read_to_string(i.as_ref()).unwrap();
-    ///     entries.parse_extend(include.lines());
+    ///     entries.parse_extend(BASE, include.lines());
     /// }
     /// ```
     ///
@@ -399,7 +449,7 @@ impl Entries {
 
         flattened.sort_by(|a, b| {
             b.kind
-                .cmp(&a.kind) // kind reversed for `domains.split_off()`
+                .cmp(&a.kind) // kind reversed for `Vec::split_off()`
                 .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
         });
         flattened.dedup();
@@ -440,13 +490,7 @@ fn test_parse_entries_basic() {
     assert_eq!(includes[0].as_ref(), "example");
 }
 
-/// Domain entries flattened by [`Entries::flatten`]
-///
-/// # Invariants
-///
-/// While owned as [`FlatDomains`], the inner [`Vec<Domain>`][Domain] is guaranteed to be non-empty.
-///
-/// No guarantees are provided once the value is consumed.
+/// Domain entries flattened by [`Entries::flatten`], reversed ordered by [`DomainKind`].
 #[derive(Clone)]
 pub struct FlatDomains {
     inner: Vec<Domain>,
@@ -454,10 +498,24 @@ pub struct FlatDomains {
 
 impl FlatDomains {
     /// Consumes [`self`] and returns the underlying [`Vec<Domain>`][Domain].
-    ///
-    /// This operation discards all invariants associated with [`FlatDomains`].
     pub fn into_vec(self) -> Vec<Domain> {
         self.inner
+    }
+
+    /// inner [`Vec<Domain>`][Domain] will be [`split_off`][Vec::split_off]
+    /// at the next kind index to reduce allocations.
+    ///
+    /// This method can only be called for maximum four times, bound by [`DomainKind`].
+    pub fn take_next(&mut self) -> Option<(DomainKind, Box<[Box<str>]>)> {
+        let kind = self.inner.last()?.kind;
+        let idx = self.inner.partition_point(|d| d.kind != kind);
+        let v: Box<[_]> = self
+            .inner
+            .split_off(idx)
+            .into_iter()
+            .map(|d| d.value)
+            .collect();
+        (!v.is_empty()).then_some((kind, v))
     }
 }
 
@@ -505,6 +563,28 @@ fn test_flatten_partial_domains() {
     let remaining = entries.domains.as_ref().unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].base.as_ptr(), other_base.as_ptr());
+}
+
+#[test]
+fn test_flatten_domains_take_next() {
+    let content = "\
+            domain:domain
+            full:full
+            keyword:keyword
+            regexp:regexp
+        ";
+
+    let mut entries = Entries::parse(BASE, content.lines());
+
+    let mut flat = entries.flatten(BASE, None).unwrap();
+
+    assert!(entries.domains.is_none());
+
+    let mut i = 0;
+    while flat.take_next().is_some() {
+        i += 1;
+    }
+    assert_eq!(i, 4);
 }
 
 #[test]

@@ -15,7 +15,7 @@ fn main() {
     let mut entries = Entries::parse(BASE, content.lines());
     while let Some(i) = entries.next_include() {
         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-        entries.parse_extend(include.lines());
+        entries.parse_extend(BASE, include.lines());
     }
     // expect: domain_keyword: Some(["fitbit", "google"])
     // change the `Some(&[])` to something else can alter behavier,

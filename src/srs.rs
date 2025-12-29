@@ -25,24 +25,21 @@ pub struct Rule {
 }
 
 impl From<FlatDomains> for Rule {
-    fn from(flat: FlatDomains) -> Self {
-        let mut domains = flat.into_vec();
-        let mut take = |kind: DomainKind| -> Option<Box<[Box<str>]>> {
-            let idx = domains.partition_point(|d| d.kind != kind);
-            let v: Box<[_]> = domains
-                .split_off(idx)
-                .into_iter()
-                .map(|d| d.value)
-                .collect();
-            (!v.is_empty()).then_some(v)
+    fn from(mut flat: FlatDomains) -> Self {
+        let mut rule = Self {
+            ..Default::default()
         };
 
-        Self {
-            domain_suffix: take(DomainKind::Suffix),
-            domain: take(DomainKind::Full),
-            domain_keyword: take(DomainKind::Keyword),
-            domain_regex: take(DomainKind::Regex),
+        while let Some((kind, values)) = flat.take_next() {
+            match kind {
+                DomainKind::Suffix => rule.domain_suffix = Some(values),
+                DomainKind::Full => rule.domain = Some(values),
+                DomainKind::Keyword => rule.domain_keyword = Some(values),
+                DomainKind::Regex => rule.domain_regex = Some(values),
+            }
         }
+
+        rule
     }
 }
 
