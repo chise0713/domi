@@ -33,7 +33,7 @@ pub mod srs;
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashSet, VecDeque},
+    collections::{BTreeSet, HashSet, VecDeque},
     fmt::Display,
     marker::PhantomData,
     rc::Rc,
@@ -338,6 +338,19 @@ impl Entries {
                 None => self.set_includes(includes),
             }
         }
+    }
+
+    /// Returns a deduplicated set of bases.
+    ///
+    /// Bases are ordered by their [`Ord`] implementation.
+    pub fn bases(&self) -> impl Iterator<Item = Rc<str>> + use<> {
+        let btree: BTreeSet<_> = self
+            .domains
+            .iter()
+            .flatten()
+            .map(|d| d.base.clone())
+            .collect();
+        btree.into_iter()
     }
 
     /// Returns a snapshot iterator of current includes.

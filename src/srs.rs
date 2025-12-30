@@ -85,7 +85,8 @@ fn test_from_iter() {
             .unwrap()
             .into_iter()
             .next()
-            .unwrap(),
-        "keyword".into()
+            .unwrap()
+            .as_ref(),
+        "keyword"
     )
 }

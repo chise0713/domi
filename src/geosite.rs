@@ -14,7 +14,7 @@ use proto::{
     GeoSite, GeoSiteList,
 };
 
-use crate::{DomainKind, FlatDomains};
+use crate::{DomainKind, Entries, FlatDomains};
 
 impl From<Rc<str>> for Attribute {
     fn from(value: Rc<str>) -> Self {
@@ -64,6 +64,19 @@ impl FromIterator<GeoSite> for GeoSiteList {
     }
 }
 
+impl From<Entries> for GeoSiteList {
+    fn from(mut entries: Entries) -> Self {
+        let bases = entries.bases();
+
+        GeoSiteList::from_iter(
+            bases
+                .into_iter()
+                .filter_map(|base| entries.flatten(&base, None))
+                .map(GeoSite::from),
+        )
+    }
+}
+
 #[test]
 fn test_sort_predictable() {
     crate::sort_predictable::test(
@@ -100,5 +113,21 @@ fn test_from_iter() {
             }]
             .into()
         }
+    )
+}
+
+#[test]
+fn test_from_entries() {
+    let bases = ["base1", "base2", "base2"]; // dedup
+    let contents = ["keyword:keyword", "regexp:regexp", "regexp:regexp"]; // dedup
+    let mut entries = crate::Entries::parse("base0", "full:full".lines());
+    bases
+        .into_iter()
+        .flat_map(|base| contents.into_iter().map(move |content| (base, content)))
+        .for_each(|(base, content)| entries.parse_extend(base, content.lines()));
+    let geosite_list = GeoSiteList::from(entries);
+    assert_eq!(
+        geosite_list.entry.len(),
+        3 // base0 + base1 + base2
     )
 }
