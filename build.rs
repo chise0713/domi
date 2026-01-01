@@ -1,7 +1,7 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    #[cfg(feature = "protobuf")]
+    #[cfg(feature = "prost")]
     {
         const GEOSITE_PROTO: &str = "proto/geosite.proto";
         println!("cargo:rerun-if-changed={}", GEOSITE_PROTO);

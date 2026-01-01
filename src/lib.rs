@@ -26,7 +26,7 @@
 //! }
 //! ```
 
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub mod geosite;
 #[cfg(feature = "serde")]
 pub mod srs;
@@ -40,7 +40,15 @@ use std::{
     str::Lines,
 };
 
-use rustc_hash::FxBuildHasher;
+cfg_if::cfg_if! {
+    if #[cfg(feature = "ahash")] {
+        use ::ahash::RandomState as Hasher;
+    } else if #[cfg(feature = "rustc-hash")] {
+        use ::rustc_hash::FxBuildHasher as Hasher;
+    } else {
+        use ::std::collections::hash_map::RandomState as Hasher;
+    }
+}
 
 /// Represents the matching behavier
 ///
@@ -78,94 +86,130 @@ pub struct Domain {
 }
 
 struct Interner {
-    set: HashSet<Rc<str>, FxBuildHasher>,
+    set: Option<HashSet<Rc<str>, Hasher>>,
 }
 
 impl Interner {
+    #[inline(always)]
     fn new() -> Self {
-        Self {
-            set: HashSet::with_hasher(FxBuildHasher),
-        }
+        Self { set: None }
     }
 
-    fn intern(&mut self, s: &str) -> Rc<str> {
-        if let Some(v) = self.set.get(s) {
+    #[inline(always)]
+    fn initialize(&mut self) {
+        _ = self.set.insert(HashSet::default());
+    }
+
+    #[inline(always)]
+    fn intern(&mut self, s: Rc<str>) -> Rc<str> {
+        let set = self.set.get_or_insert_with(|| {
+            #[cfg(debug_assertions)]
+            dbg!("Interner is not initialized while interning");
+            HashSet::default()
+        });
+        if let Some(v) = set.get(&s) {
             v.clone()
         } else {
-            let v: Rc<str> = Rc::from(s);
-            self.set.insert(v.clone());
-            v
+            set.insert(s.clone());
+            s
         }
     }
 
+    #[inline(always)]
+    fn intern_str(&mut self, s: &str) -> Option<Rc<str>> {
+        let set = self.set.as_ref()?;
+        set.get(s).cloned()
+    }
+
+    #[inline(always)]
     fn clear(&mut self) {
-        self.set.clear()
+        if self.set.is_none() {
+            #[cfg(debug_assertions)]
+            dbg!("Internet is not initialized while clearing");
+            return;
+        }
+        self.set = None;
     }
 }
 
-thread_local! {
-    static ATTR_POOL: RefCell<Interner> = RefCell::new(Interner::new());
+macro_rules! define_pool {
+    ($name:ident) => {
+        paste::paste! {
+            thread_local! {
+                static [< $name:upper _POOL >]: RefCell<Interner> = RefCell::new(Interner::new());
+            }
+            struct [< $name Pool >];
+            impl [< $name Pool >] {
+                #[inline]
+                fn initialize() {
+                    [< $name:upper _POOL >].with_borrow_mut(|p| p.initialize())
+                }
+                #[inline]
+                fn [< $name:lower >](s: Rc<str>) -> Rc<str> {
+                    [< $name:upper _POOL >].with_borrow_mut(|p| p.intern(s))
+                }
+                #[inline]
+                fn clear() {
+                    [< $name:upper _POOL >].with_borrow_mut(|p| p.clear())
+                }
+            }
+        }
+    };
 }
 
-struct AttrPool;
-
-impl AttrPool {
-    #[inline]
-    fn attr(s: &str) -> Rc<str> {
-        ATTR_POOL.with_borrow_mut(|p| p.intern(s))
-    }
-
-    #[inline]
-    fn clear() {
-        ATTR_POOL.with_borrow_mut(|p| p.clear())
-    }
-}
-
-thread_local! {
-    static BASE_POOL: RefCell<Interner> = RefCell::new(Interner::new());
-}
-
-struct BasePool;
+define_pool!(Base);
+define_pool!(Attr);
 
 impl BasePool {
-    #[inline]
-    fn base(s: &str) -> Rc<str> {
-        BASE_POOL.with_borrow_mut(|p| p.intern(s))
-    }
-
-    #[inline]
-    fn clear() {
-        BASE_POOL.with_borrow_mut(|p| p.clear())
+    fn base_str(s: &str) -> Option<Rc<str>> {
+        BASE_POOL.with_borrow_mut(|p| p.intern_str(s))
     }
 }
 
 thread_local! {
-    static POOL_USED_COUNT: Cell<usize> = const { Cell::new(0) };
+    static POOL_USED_COUNT: Cell<isize> = const { Cell::new(0) };
 }
 
+type NotSyncNorSend = PhantomData<Rc<()>>;
+
 struct PoolGuard {
-    _not_send: PhantomData<Rc<()>>,
+    _marker: NotSyncNorSend,
 }
 
 impl PoolGuard {
     fn acquire() -> Self {
-        POOL_USED_COUNT.with(|c| c.set(c.get() + 1));
+        let n = POOL_USED_COUNT.get();
+        if n <= 0 {
+            POOL_USED_COUNT.set(1);
+            #[cfg(debug_assertions)]
+            if n < 0 {
+                dbg!("POOL_USED_COUNT underflow", n);
+            }
+            AttrPool::initialize();
+            BasePool::initialize();
+        } else {
+            POOL_USED_COUNT.set(n + 1);
+        }
         Self {
-            _not_send: PhantomData,
+            _marker: NotSyncNorSend::default(),
         }
     }
 }
 
 impl Drop for PoolGuard {
     fn drop(&mut self) {
-        POOL_USED_COUNT.with(|c| {
-            let n = c.get() - 1;
-            c.set(n);
-            if n == 0 {
-                AttrPool::clear();
-                BasePool::clear();
+        let n = POOL_USED_COUNT.get() - 1;
+        if n <= 0 {
+            AttrPool::clear();
+            BasePool::clear();
+            #[cfg(debug_assertions)]
+            if n < 0 {
+                dbg!("POOL_USED_COUNT underflow", n);
             }
-        });
+            POOL_USED_COUNT.set(0);
+        } else {
+            POOL_USED_COUNT.set(n);
+        }
     }
 }
 
@@ -183,6 +227,8 @@ impl Entry {
             return None;
         }
 
+        let base = Rc::from(base);
+
         let line = line.split_once('#').map(|(l, _)| l).unwrap_or(line).trim();
 
         let (kind_str, value) = line.split_once(':').unwrap_or(("domain", line));
@@ -191,7 +237,7 @@ impl Entry {
             "full" => DomainKind::Full,
             "regexp" => DomainKind::Regex,
             "keyword" => DomainKind::Keyword,
-            "include" => return Some(Self::Include(BasePool::base(value))),
+            "include" => return Some(Self::Include(Rc::from(value))),
             _ => unreachable!("unknown domain kind prefix: {kind_str}"),
         };
 
@@ -201,10 +247,8 @@ impl Entry {
 
         let attrs = parts
             .filter(|s| s.starts_with('@'))
-            .map(|s| AttrPool::attr(s[1..].into()))
+            .map(|s| Rc::from(&s[1..]))
             .collect();
-
-        let base = BasePool::base(base);
 
         Some(Self::Domain(Domain {
             kind,
@@ -243,9 +287,9 @@ fn test_parse_line_combinations() {
 
                 let expected_domain = Some(Domain {
                     kind,
-                    base: BasePool::base(base),
+                    base: base.into(),
                     value: "example.com".into(),
-                    attrs: attrs.iter().map(|s| AttrPool::attr(s)).collect(),
+                    attrs: attrs.iter().map(|s| Rc::from(*s)).collect(),
                 });
 
                 assert_eq!(domain, expected_domain, "line: {}", line);
@@ -269,9 +313,9 @@ fn test_parse_line_combinations() {
 /// - Cyclic includes are considered invalid data and are **not** checked
 ///   at runtime.
 pub struct Entries {
-    _pg: PoolGuard,
     domains: Option<Vec<Domain>>,
     includes: Option<VecDeque<Rc<str>>>,
+    _pg: PoolGuard,
 }
 
 impl Entries {
@@ -279,24 +323,24 @@ impl Entries {
         let _pg = PoolGuard::acquire();
         let mut domains = Vec::new();
         let mut includes = VecDeque::new();
-        let base = BasePool::base(base);
 
         for line in content {
-            if let Some(entry) = Entry::parse_line(&base, line) {
+            if let Some(entry) = Entry::parse_line(base, line) {
                 match entry {
                     Entry::Domain(mut domain) => {
-                        domain.base = base.clone();
+                        domain.base = BasePool::base(domain.base);
+                        domain.attrs = domain.attrs.into_iter().map(AttrPool::attr).collect();
                         domains.push(domain);
                     }
-                    Entry::Include(include) => includes.push_back(include),
+                    Entry::Include(include) => includes.push_back(BasePool::base(include)),
                 }
             }
         }
 
         Self {
-            _pg,
             domains: (!domains.is_empty()).then_some(domains),
             includes: (!includes.is_empty()).then_some(includes),
+            _pg,
         }
     }
 
@@ -414,7 +458,7 @@ impl Entries {
     ///
     /// Selected domains are removed from `self.domains`;
     /// non-selected domains are retained.
-    /// Returns `None` if `self.domains` is empty, or if no domains are selected (`flattened` is empty).
+    /// Returns `None` if no domains are selected (`flattened` is empty).
     pub fn flatten(
         &mut self,
         base: &str,
@@ -422,11 +466,12 @@ impl Entries {
     ) -> Option<FlatDomains> {
         let inner = self.domains.take()?;
         let mut flattened = Vec::with_capacity(inner.len());
+        let base = BasePool::base_str(base)?;
 
         let domains: Vec<_> = inner
             .into_iter()
             .filter_map(|candidate| {
-                if base != &*candidate.base {
+                if !Rc::ptr_eq(&base, &candidate.base) {
                     return Some(candidate);
                 }
 
@@ -515,19 +560,14 @@ impl FlatDomains {
         self.inner
     }
 
-    /// inner [`Vec<Domain>`][Domain] will be [`split_off`][Vec::split_off]
+    /// inner [`Vec<Domain>`][Domain] will be [`Vec::drain`]
     /// at the next kind index to reduce allocations.
     ///
     /// This method can only be called for maximum four times, bound by [`DomainKind`].
     pub fn take_next(&mut self) -> Option<(DomainKind, Box<[Box<str>]>)> {
         let kind = self.inner.last()?.kind;
         let idx = self.inner.partition_point(|d| d.kind != kind);
-        let v: Box<[_]> = self
-            .inner
-            .split_off(idx)
-            .into_iter()
-            .map(|d| d.value)
-            .collect();
+        let v: Box<[_]> = self.inner.drain(idx..).map(|d| d.value).collect();
         (!v.is_empty()).then_some((kind, v))
     }
 }
@@ -562,7 +602,7 @@ fn test_flatten_partial_domains() {
 
     let mut entries = Entries::parse(BASE, content.lines());
 
-    let other_base = BasePool::base("other_base");
+    let other_base = BasePool::base("other_base".into());
     if let Some(domains) = entries.domains.as_mut() {
         domains[0].base = other_base.clone();
     }

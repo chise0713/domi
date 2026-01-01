@@ -49,7 +49,7 @@ impl From<FlatDomains> for GeoSite {
     fn from(flat: FlatDomains) -> Self {
         let domains = flat.into_vec();
         GeoSite {
-            country_code: domains[0].base.to_owned().to_string(), // it's flattened
+            country_code: domains[0].base.to_string(), // it's flattened
             domain: domains.into_iter().map(proto::Domain::from).collect(),
         }
     }
@@ -70,7 +70,6 @@ impl From<Entries> for GeoSiteList {
 
         GeoSiteList::from_iter(
             bases
-                .into_iter()
                 .filter_map(|base| entries.flatten(&base, None))
                 .map(GeoSite::from),
         )
@@ -118,13 +117,19 @@ fn test_from_iter() {
 
 #[test]
 fn test_from_entries() {
-    let bases = ["base1", "base2", "base2"]; // dedup
-    let contents = ["keyword:keyword", "regexp:regexp", "regexp:regexp"]; // dedup
+    let pairs = [
+        ("base1", "keyword:keyword"),
+        ("base2", "regexp:regexp"),
+        ("base2", "regexp:regexp"),
+    ]; // dedup
     let mut entries = crate::Entries::parse("base0", "full:full".lines());
-    bases
-        .into_iter()
-        .flat_map(|base| contents.into_iter().map(move |content| (base, content)))
-        .for_each(|(base, content)| entries.parse_extend(base, content.lines()));
+    assert_eq!(
+        pairs
+            .iter()
+            .map(|(base, content)| entries.parse_extend(base, content.lines()))
+            .count(),
+        3
+    );
     let geosite_list = GeoSiteList::from(entries);
     assert_eq!(
         geosite_list.entry.len(),
