@@ -36,6 +36,7 @@ use std::{
     collections::{BTreeSet, HashSet, VecDeque},
     fmt::Display,
     marker::PhantomData,
+    ops::Deref,
     rc::Rc,
     str::Lines,
 };
@@ -134,7 +135,7 @@ impl Interner {
 
 macro_rules! define_pool {
     ($name:ident) => {
-        paste::paste! {
+        ::paste::paste! {
             thread_local! {
                 static [< $name:upper _POOL >]: RefCell<Interner> = RefCell::new(Interner::new());
             }
@@ -149,6 +150,10 @@ macro_rules! define_pool {
                     [< $name:upper _POOL >].with_borrow_mut(|p| p.intern(s))
                 }
                 #[inline]
+                fn [< $name:lower _str>](s: &str) -> Option<Rc<str>> {
+                    [< $name:upper _POOL >].with_borrow_mut(|p| p.intern_str(s))
+                }
+                #[inline]
                 fn clear() {
                     [< $name:upper _POOL >].with_borrow_mut(|p| p.clear())
                 }
@@ -159,12 +164,6 @@ macro_rules! define_pool {
 
 define_pool!(Base);
 define_pool!(Attr);
-
-impl BasePool {
-    fn base_str(s: &str) -> Option<Rc<str>> {
-        BASE_POOL.with_borrow_mut(|p| p.intern_str(s))
-    }
-}
 
 thread_local! {
     static POOL_USED_COUNT: Cell<isize> = const { Cell::new(0) };
@@ -213,6 +212,62 @@ impl Drop for PoolGuard {
     }
 }
 
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy)]
+pub struct OneLine<'a> {
+    inner: &'a str,
+}
+
+impl<'a> OneLine<'a> {
+    pub fn new(s: &'a str) -> Option<Self> {
+        if s.contains('\n') || s.contains('\r') {
+            None
+        } else {
+            Some(Self { inner: s })
+        }
+    }
+
+    /// # Safety
+    ///
+    /// `s` must not contain `\n` or `\r`.
+    pub unsafe fn new_unchecked(s: &'a str) -> Self {
+        Self { inner: s }
+    }
+}
+
+impl<'a> Deref for OneLine<'a> {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+impl<'a> Display for OneLine<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self)
+    }
+}
+
+macro_rules! maybe_intern {
+    ($use_pool:expr, $s:expr, $name:ident) => {{
+        ::paste::paste! {
+            if !$use_pool {
+                Rc::from($s)
+            } else {
+                [<$name Pool>]::[<$name:lower _str>]($s)
+                    .unwrap_or_else(|| [<$name Pool>]::[<$name:lower>](Rc::from($s)))
+            }
+        }
+    }};
+}
+
+macro_rules! intern {
+    ($s:expr, $name:ident) => {
+        maybe_intern!(true, $s, $name)
+    };
+}
+
 /// Single parsed entry
 #[derive(Debug, Clone)]
 pub enum Entry {
@@ -221,13 +276,17 @@ pub enum Entry {
 }
 
 impl Entry {
-    pub fn parse_line(base: &str, line: &str) -> Option<Self> {
+    pub fn parse_line(base: &str, line: OneLine) -> Option<Self> {
+        Self::parse_line_inner::<false>(base, line)
+    }
+
+    fn parse_line_inner<const USE_POOL: bool>(base: &str, line: OneLine) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             return None;
         }
 
-        let base = Rc::from(base);
+        let base = maybe_intern!(USE_POOL, base, Base);
 
         let line = line.split_once('#').map(|(l, _)| l).unwrap_or(line).trim();
 
@@ -237,7 +296,7 @@ impl Entry {
             "full" => DomainKind::Full,
             "regexp" => DomainKind::Regex,
             "keyword" => DomainKind::Keyword,
-            "include" => return Some(Self::Include(Rc::from(value))),
+            "include" => return Some(Self::Include(maybe_intern!(USE_POOL, value, Base))),
             _ => unreachable!("unknown domain kind prefix: {kind_str}"),
         };
 
@@ -247,7 +306,10 @@ impl Entry {
 
         let attrs = parts
             .filter(|s| s.starts_with('@'))
-            .map(|s| Rc::from(&s[1..]))
+            .map(|s| {
+                let s = s.strip_prefix('@').unwrap();
+                maybe_intern!(USE_POOL, s, Attr)
+            })
             .collect();
 
         Some(Self::Domain(Domain {
@@ -261,6 +323,7 @@ impl Entry {
 
 #[test]
 fn test_parse_line_combinations() {
+    let _pg = PoolGuard::acquire();
     let bases = ["google", "alphabet"];
     let attr_combos: [&[&str]; _] = [&[], &["attr1"], &["attr1", "attr2"]];
 
@@ -279,17 +342,17 @@ fn test_parse_line_combinations() {
                     line.push_str(" @");
                     line.push_str(attr);
                 }
-
-                let (domain, include) = match Entry::parse_line(base, &line).unwrap() {
+                let line = OneLine::new(&line).unwrap();
+                let (domain, include) = match Entry::parse_line_inner::<true>(base, line).unwrap() {
                     Entry::Domain(d) => (Some(d), None),
                     Entry::Include(i) => (None, Some(i)),
                 };
 
                 let expected_domain = Some(Domain {
                     kind,
-                    base: base.into(),
+                    base: intern!(base, Base),
                     value: "example.com".into(),
-                    attrs: attrs.iter().map(|s| Rc::from(*s)).collect(),
+                    attrs: attrs.iter().map(|s| intern!(*s, Attr)).collect(),
                 });
 
                 assert_eq!(domain, expected_domain, "line: {}", line);
@@ -325,14 +388,14 @@ impl Entries {
         let mut includes = VecDeque::new();
 
         for line in content {
-            if let Some(entry) = Entry::parse_line(base, line) {
+            // Safety:
+            // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
+            if let Some(entry) =
+                Entry::parse_line_inner::<true>(base, unsafe { OneLine::new_unchecked(line) })
+            {
                 match entry {
-                    Entry::Domain(mut domain) => {
-                        domain.base = BasePool::base(domain.base);
-                        domain.attrs = domain.attrs.into_iter().map(AttrPool::attr).collect();
-                        domains.push(domain);
-                    }
-                    Entry::Include(include) => includes.push_back(BasePool::base(include)),
+                    Entry::Domain(domain) => domains.push(domain),
+                    Entry::Include(include) => includes.push_back(include),
                 }
             }
         }
@@ -443,63 +506,86 @@ impl Entries {
     /// Flatten domains by `base` with optional attribute filters,
     /// then **[`sort`][slice::sort]** and **[`dedup`][Vec::dedup]** the selected domains.
     ///
-    /// Selection rules:
-    /// - `attr_filters == None`  
-    ///   → select **all** domains with matching `base`
+    /// # Selection rules:
+    /// - `attr_filters == None`:
+    ///   Selects **all** domains with a matching `base`.
     ///
-    /// - `attr_filters == Some(&[])`  
-    ///   → select **only** domains with matching `base` and no attributes
+    /// - `attr_filters == Some(&[])`:
+    ///   Selects **only** domains with a matching `base` and **no** attributes.
     ///
-    /// - `attr_filters == Some(filters)`  
-    ///   → select domains with matching `base` that satisfy **all** filters:
-    ///     - [`AttrFilter::Has`]: **at least one** of `candidate.attrs` equals to variant value
-    ///     - [`AttrFilter::Lacks`]: **no `candidate.attrs` equals** to variant value;
-    ///       **overrides** [`AttrFilter::Has`] matches
+    /// - `attr_filters == Some(filters)`:
+    ///   Selects domains with a matching `base` that satisfy **all** filters:
+    ///   - [`AttrFilter::Has`]: **At least one** of `candidate.attrs` matches the filter value.
+    ///   - [`AttrFilter::Lacks`]: **No** `candidate.attrs` matches the filter value.
+    ///     This effectively **overrides** any [`AttrFilter::Has`] matches for the same attribute.
     ///
-    /// Selected domains are removed from `self.domains`;
-    /// non-selected domains are retained.
-    /// Returns `None` if no domains are selected (`flattened` is empty).
+    /// ### Performance
+    /// Unlike [`flatten_drain`][Self::flatten_drain], this method retains the original domains
+    /// by cloning each selected [`Domain`], which incurs some additional allocation overhead.
+    ///
+    /// Returns `None` if no domains are selected (i.e., the result is empty).
+    #[inline(always)]
     pub fn flatten(
         &mut self,
         base: &str,
         attr_filters: Option<&[AttrFilter]>,
     ) -> Option<FlatDomains> {
-        let inner = self.domains.take()?;
-        let mut flattened = Vec::with_capacity(inner.len());
+        self.flatten_inner::<false>(base, attr_filters)
+    }
+
+    /// Similar to [`flatten`][Self::flatten], but **drains** selected domains from `self.domains`.
+    ///
+    /// Only non-selected domains are retained in the original collection. This is generally more
+    /// efficient than [`flatten`][Self::flatten] as it moves out domains instead of cloning them.
+    #[inline(always)]
+    pub fn flatten_drain(
+        &mut self,
+        base: &str,
+        attr_filters: Option<&[AttrFilter]>,
+    ) -> Option<FlatDomains> {
+        self.flatten_inner::<true>(base, attr_filters)
+    }
+
+    fn flatten_inner<const DRAIN: bool>(
+        &mut self,
+        base: &str,
+        attr_filters: Option<&[AttrFilter]>,
+    ) -> Option<FlatDomains> {
+        let domains = self.domains.take()?;
+        let mut flattened = Vec::with_capacity(domains.len());
         let base = BasePool::base_str(base)?;
+        // Convert `AttrFilter` into an internal `Rc` version for fast lookup.
+        // After intern lookup, comparisons in flatten/filter use `Rc::ptr_eq`
+        // instead of string-by-string comparison, which significantly improves
+        // performance on hot paths with many domains.
+        //
+        // Note: If a caller provides an attribute not already in the AttrPool,
+        // it will be interned on-the-fly, incurring a one-time interning cost
+        // for that specific filter.
+        let attr_filters: Option<Box<[AttrFilterIntern]>> = attr_filters.map(|afs| {
+            afs.iter()
+                .map(|f| match f {
+                    AttrFilter::Has(s) => AttrFilterIntern::Has(intern!(*s, Attr)),
+                    AttrFilter::Lacks(s) => AttrFilterIntern::Lacks(intern!(*s, Attr)),
+                })
+                .collect()
+        });
 
-        let domains: Vec<_> = inner
-            .into_iter()
-            .filter_map(|candidate| {
-                if !Rc::ptr_eq(&base, &candidate.base) {
-                    return Some(candidate);
-                }
-
-                let select = match attr_filters {
-                    None => true,
-                    Some([]) => candidate.attrs.is_empty(),
-                    Some(attr_filters) => {
-                        attr_filters.iter().all(|attr_filter| match attr_filter {
-                            AttrFilter::Has(matches) => {
-                                candidate.attrs.iter().any(|attr| &**attr == *matches)
-                            }
-                            AttrFilter::Lacks(matches) => {
-                                candidate.attrs.iter().all(|attr| &**attr != *matches)
-                            }
-                        })
-                    }
-                };
-
-                if select {
-                    flattened.push(candidate);
-                    None
-                } else {
-                    Some(candidate)
-                }
-            })
-            .collect();
-
-        self.set_domains(domains);
+        if DRAIN {
+            self.set_domains(flatten::drain_matches(
+                domains,
+                base,
+                attr_filters.as_deref(),
+                &mut flattened,
+            ));
+        } else {
+            self.set_domains(flatten::retain_all(
+                domains,
+                base,
+                attr_filters.as_deref(),
+                &mut flattened,
+            ));
+        }
 
         if flattened.is_empty() {
             return None;
@@ -515,10 +601,79 @@ impl Entries {
     }
 }
 
+mod flatten {
+    use std::rc::Rc;
+
+    use crate::{AttrFilterIntern, Domain};
+
+    fn should_select(
+        candidate: &Domain,
+        base: &Rc<str>,
+        attr_filters: Option<&[AttrFilterIntern]>,
+    ) -> bool {
+        if !Rc::ptr_eq(base, &candidate.base) {
+            return false;
+        }
+
+        match &attr_filters {
+            None => true,
+            Some([]) => candidate.attrs.is_empty(),
+            Some(attr_filters) => attr_filters.iter().all(|attr_filter| match attr_filter {
+                AttrFilterIntern::Has(matches) => {
+                    candidate.attrs.iter().any(|attr| Rc::ptr_eq(attr, matches))
+                }
+                AttrFilterIntern::Lacks(matches) => candidate
+                    .attrs
+                    .iter()
+                    .all(|attr| !Rc::ptr_eq(attr, matches)),
+            }),
+        }
+    }
+
+    pub(crate) fn retain_all(
+        domains: Vec<Domain>,
+        base: Rc<str>,
+        attr_filters: Option<&[AttrFilterIntern]>,
+        flattened: &mut Vec<Domain>,
+    ) -> Vec<Domain> {
+        domains.iter().for_each(|candidate| {
+            if should_select(candidate, &base, attr_filters) {
+                flattened.push(candidate.clone());
+            }
+        });
+        domains
+    }
+
+    pub(crate) fn drain_matches(
+        domains: Vec<Domain>,
+        base: Rc<str>,
+        attr_filters: Option<&[AttrFilterIntern]>,
+        flattened: &mut Vec<Domain>,
+    ) -> Vec<Domain> {
+        let domains: Vec<_> = domains
+            .into_iter()
+            .filter_map(|candidate| {
+                if should_select(&candidate, &base, attr_filters) {
+                    flattened.push(candidate);
+                    None
+                } else {
+                    Some(candidate)
+                }
+            })
+            .collect();
+        domains
+    }
+}
+
 /// Filtering behavier. Used by [`Entries::flatten`]
 pub enum AttrFilter<'a> {
     Has(&'a str),
     Lacks(&'a str),
+}
+
+enum AttrFilterIntern {
+    Has(Rc<str>),
+    Lacks(Rc<str>),
 }
 
 #[cfg(test)]
@@ -582,7 +737,7 @@ fn test_flatten_domains() {
 
     let mut entries = Entries::parse(BASE, content.lines());
 
-    let flat = entries.flatten(BASE, None).unwrap();
+    let flat = entries.flatten_drain(BASE, None).unwrap();
 
     assert!(entries.domains.is_none());
 
@@ -607,7 +762,7 @@ fn test_flatten_partial_domains() {
         domains[0].base = other_base.clone();
     }
 
-    let flat = entries.flatten(BASE, None).unwrap();
+    let flat = entries.flatten_drain(BASE, None).unwrap();
 
     let flat_domains = flat.into_vec();
     assert_eq!(flat_domains.len(), 1);
@@ -629,7 +784,7 @@ fn test_flatten_domains_take_next() {
 
     let mut entries = Entries::parse(BASE, content.lines());
 
-    let mut flat = entries.flatten(BASE, None).unwrap();
+    let mut flat = entries.flatten_drain(BASE, None).unwrap();
 
     assert!(entries.domains.is_none());
 
@@ -649,7 +804,7 @@ fn test_dedup() {
 
     let mut entries = Entries::parse(BASE, content.lines());
 
-    let flat = entries.flatten(BASE, None).unwrap().into_vec();
+    let flat = entries.flatten_drain(BASE, None).unwrap().into_vec();
 
     assert!(entries.domains.is_none());
 
@@ -680,7 +835,7 @@ mod sort_predictable {
     {
         let list: [T; VARIANT_LEN] = array::from_fn(|i| {
             let domains = Entries::parse(BASE, CONTENS[i].lines())
-                .flatten(BASE, None)
+                .flatten_drain(BASE, None)
                 .unwrap();
 
             build(domains)
