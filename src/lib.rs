@@ -51,7 +51,7 @@ cfg_if::cfg_if! {
     }
 }
 
-/// Represents the matching behavier
+/// Represents the matching behavior
 ///
 /// This corresponds to the prefix of a single domain in the source file
 /// (e.g. `domain:`, `full:`, `keyword:`, `regexp:`).
@@ -126,7 +126,7 @@ impl Interner {
     fn clear(&mut self) {
         if self.set.is_none() {
             #[cfg(debug_assertions)]
-            dbg!("Internet is not initialized while clearing");
+            dbg!("Interner is not initialized while clearing");
             return;
         }
         self.set = None;
@@ -164,6 +164,25 @@ macro_rules! define_pool {
 
 define_pool!(Base);
 define_pool!(Attr);
+
+macro_rules! maybe_intern {
+    ($use_pool:expr, $s:expr, $name:ident) => {{
+        ::paste::paste! {
+            if !$use_pool {
+                Rc::from($s)
+            } else {
+                [<$name Pool>]::[<$name:lower _str>]($s)
+                    .unwrap_or_else(|| [<$name Pool>]::[<$name:lower>](Rc::from($s)))
+            }
+        }
+    }};
+}
+
+macro_rules! intern {
+    ($s:expr, $name:ident) => {
+        maybe_intern!(true, $s, $name)
+    };
+}
 
 thread_local! {
     static POOL_USED_COUNT: Cell<isize> = const { Cell::new(0) };
@@ -247,25 +266,6 @@ impl<'a> Display for OneLine<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self)
     }
-}
-
-macro_rules! maybe_intern {
-    ($use_pool:expr, $s:expr, $name:ident) => {{
-        ::paste::paste! {
-            if !$use_pool {
-                Rc::from($s)
-            } else {
-                [<$name Pool>]::[<$name:lower _str>]($s)
-                    .unwrap_or_else(|| [<$name Pool>]::[<$name:lower>](Rc::from($s)))
-            }
-        }
-    }};
-}
-
-macro_rules! intern {
-    ($s:expr, $name:ident) => {
-        maybe_intern!(true, $s, $name)
-    };
 }
 
 /// Single parsed entry
