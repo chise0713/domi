@@ -231,6 +231,11 @@ impl Drop for PoolGuard {
     }
 }
 
+/// A string slice that is guaranteed to be a single line.
+///
+/// # Invariants
+///
+/// The contained string must not contain `\n` or `\r`.
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub struct OneLine<'a> {
@@ -238,8 +243,11 @@ pub struct OneLine<'a> {
 }
 
 impl<'a> OneLine<'a> {
+    /// Creates a `OneLine` if the input string contains no line breaks.
+    ///
+    /// Returns `None` if `s` contains `\n` or `\r`.
     pub fn new(s: &'a str) -> Option<Self> {
-        if s.contains('\n') || s.contains('\r') {
+        if s.find(['\n', '\r']).is_some() {
             None
         } else {
             Some(Self { inner: s })
@@ -265,6 +273,32 @@ impl<'a> Deref for OneLine<'a> {
 impl<'a> Display for OneLine<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self)
+    }
+}
+
+#[cfg(test)]
+mod one_line {
+    use crate::OneLine;
+
+    #[test]
+    fn test_accepts_normal_str() {
+        let s = "hello world";
+        let line = OneLine::new(s);
+
+        assert!(line.is_some());
+        assert_eq!(&*line.unwrap(), s);
+    }
+
+    #[test]
+    fn test_rejects_lf() {
+        let s = "hello\nworld";
+        assert!(OneLine::new(s).is_none());
+    }
+
+    #[test]
+    fn test_rejects_cr() {
+        let s = "hello\rworld";
+        assert!(OneLine::new(s).is_none());
     }
 }
 
@@ -305,10 +339,9 @@ impl Entry {
         let value = parts.next()?.into();
 
         let attrs = parts
-            .filter(|s| s.starts_with('@'))
-            .map(|s| {
-                let s = s.strip_prefix('@').unwrap();
-                maybe_intern!(USE_POOL, s, Attr)
+            .filter_map(|s| {
+                s.strip_prefix('@')
+                    .map(|s| maybe_intern!(USE_POOL, s, Attr))
             })
             .collect();
 
