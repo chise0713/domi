@@ -98,7 +98,7 @@ impl Interner {
 
     #[inline(always)]
     fn initialize(&mut self) {
-        _ = self.set.insert(HashSet::default());
+        self.set = Some(HashSet::default())
     }
 
     #[inline(always)]
@@ -266,6 +266,12 @@ impl<'a> Deref for OneLine<'a> {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
+        self.inner
+    }
+}
+
+impl<'a> AsRef<str> for OneLine<'a> {
+    fn as_ref(&self) -> &str {
         self.inner
     }
 }
@@ -556,7 +562,9 @@ impl Entries {
     /// Unlike [`flatten_drain`][Self::flatten_drain], this method retains the original domains
     /// by cloning each selected [`Domain`], which incurs some additional allocation overhead.
     ///
-    /// Returns `None` if no domains are selected (i.e., the result is empty).
+    ///
+    /// Returns `None` if no domains are selected (i.e., the result is empty),
+    /// or if `base` was never seen during parsing.
     #[inline(always)]
     pub fn flatten(
         &mut self,
@@ -626,7 +634,7 @@ impl Entries {
 
         flattened.sort_by(|a, b| {
             b.kind
-                .cmp(&a.kind) // kind reversed for `Vec::split_off()`
+                .cmp(&a.kind) // reverse kind order to enable efficient tail `Vec::drain()`.
                 .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
         });
         flattened.dedup();
@@ -698,7 +706,7 @@ mod flatten {
     }
 }
 
-/// Filtering behavier. Used by [`Entries::flatten`]
+/// Filtering behavior. Used by [`Entries::flatten`]
 pub enum AttrFilter<'a> {
     Has(&'a str),
     Lacks(&'a str),
@@ -737,6 +745,8 @@ fn test_parse_entries_basic() {
 }
 
 /// Domain entries flattened by [`Entries::flatten`], reversed ordered by [`DomainKind`].
+///
+/// Domains are grouped by [`DomainKind`] and sorted lexicographically by value.
 #[derive(Clone)]
 pub struct FlatDomains {
     inner: Vec<Domain>,
@@ -751,7 +761,7 @@ impl FlatDomains {
     /// inner [`Vec<Domain>`][Domain] will be [`Vec::drain`]
     /// at the next kind index to reduce allocations.
     ///
-    /// This method can only be called for maximum four times, bound by [`DomainKind`].
+    /// At most one call per [`DomainKind`] variant (maximum 4 calls).
     pub fn take_next(&mut self) -> Option<(DomainKind, Box<[Box<str>]>)> {
         let kind = self.inner.last()?.kind;
         let idx = self.inner.partition_point(|d| d.kind != kind);
