@@ -320,6 +320,7 @@ impl Entry {
         Self::parse_line_inner::<false>(base, line)
     }
 
+    #[inline(always)]
     fn parse_line_inner<const USE_POOL: bool>(base: &str, line: OneLine) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -565,7 +566,6 @@ impl Entries {
     ///
     /// Returns `None` if no domains are selected (i.e., the result is empty),
     /// or if `base` was never seen during parsing.
-    #[inline(always)]
     pub fn flatten(
         &mut self,
         base: &str,
@@ -578,7 +578,6 @@ impl Entries {
     ///
     /// Only non-selected domains are retained in the original collection. This is generally more
     /// efficient than [`flatten`][Self::flatten] as it moves out domains instead of cloning them.
-    #[inline(always)]
     pub fn flatten_drain(
         &mut self,
         base: &str,
@@ -587,6 +586,7 @@ impl Entries {
         self.flatten_inner::<true>(base, attr_filters)
     }
 
+    #[inline(always)]
     fn flatten_inner<const DRAIN: bool>(
         &mut self,
         base: &str,

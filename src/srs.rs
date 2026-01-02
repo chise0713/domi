@@ -26,9 +26,7 @@ pub struct Rule {
 
 impl From<FlatDomains> for Rule {
     fn from(mut flat: FlatDomains) -> Self {
-        let mut rule = Self {
-            ..Default::default()
-        };
+        let mut rule = Self::default();
 
         while let Some((kind, values)) = flat.take_next() {
             match kind {
