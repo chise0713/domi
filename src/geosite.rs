@@ -7,19 +7,17 @@ pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/_.rs"));
 }
 
-use std::rc::Rc;
-
 use proto::{
-    domain::{attribute::TypedValue, Attribute, Type},
     GeoSite, GeoSiteList,
+    domain::{Attribute, Type, attribute::TypedValue},
 };
 
 use crate::{DomainKind, Entries, FlatDomains};
 
-impl From<Rc<str>> for Attribute {
-    fn from(value: Rc<str>) -> Self {
+impl<S: AsRef<str>> From<S> for Attribute {
+    fn from(value: S) -> Self {
         Self {
-            key: value.to_string(),
+            key: value.as_ref().to_string(),
             typed_value: Some(TypedValue::BoolValue(true)),
         }
     }
@@ -36,11 +34,7 @@ impl From<crate::Domain> for proto::Domain {
         Self {
             r#type: typ.into(),
             value: crate_domain.value.to_string(),
-            attribute: crate_domain
-                .attrs
-                .into_iter()
-                .map(Attribute::from)
-                .collect(),
+            attribute: crate_domain.attrs.iter().map(Attribute::from).collect(),
         }
     }
 }
