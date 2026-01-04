@@ -37,6 +37,7 @@ use std::{
     fmt::Display,
     hash::Hash,
     marker::PhantomData,
+    mem,
     ops::Deref,
     rc::Rc,
     str::Lines,
@@ -434,8 +435,8 @@ fn test_parse_line_combinations() {
 /// - Cyclic includes are considered invalid data and are **not** checked
 ///   at runtime.
 pub struct Entries {
-    domains: Option<Vec<Domain>>,
-    includes: Option<VecDeque<Rc<str>>>,
+    domains: Vec<Domain>,
+    includes: VecDeque<Rc<str>>,
     _pg: PoolGuard,
 }
 
@@ -457,20 +458,10 @@ impl Entries {
         }
 
         Self {
-            domains: (!domains.is_empty()).then_some(domains),
-            includes: (!includes.is_empty()).then_some(includes),
+            domains,
+            includes,
             _pg,
         }
-    }
-
-    #[inline(always)]
-    fn set_domains(&mut self, domains: Vec<Domain>) {
-        self.domains = (!domains.is_empty()).then_some(domains);
-    }
-
-    #[inline(always)]
-    fn set_includes(&mut self, includes: VecDeque<Rc<str>>) {
-        self.includes = (!includes.is_empty()).then_some(includes);
     }
 
     /// <div class="warning">
@@ -482,37 +473,15 @@ impl Entries {
     pub fn parse_extend(&mut self, base: &str, content: Lines) {
         let entries = Self::parse(base, content);
 
-        if let Some(domains) = entries.domains {
-            match self.domains.take() {
-                Some(mut d) => {
-                    d.extend(domains);
-                    self.set_domains(d);
-                }
-                None => self.set_domains(domains),
-            }
-        }
-
-        if let Some(includes) = entries.includes {
-            match self.includes.take() {
-                Some(mut i) => {
-                    i.extend(includes);
-                    self.set_includes(i);
-                }
-                None => self.set_includes(includes),
-            }
-        }
+        self.domains.extend(entries.domains);
+        self.includes.extend(entries.includes);
     }
 
     /// Returns a deduplicated set of bases.
     ///
     /// Bases are ordered by their [`Ord`] implementation.
     pub fn bases(&self) -> impl Iterator<Item = Rc<str>> + use<> {
-        let btree: BTreeSet<_> = self
-            .domains
-            .iter()
-            .flatten()
-            .map(|d| d.base.clone())
-            .collect();
+        let btree: BTreeSet<_> = self.domains.iter().map(|d| d.base.clone()).collect();
         btree.into_iter()
     }
 
@@ -523,9 +492,11 @@ impl Entries {
     pub fn pop_domain(&mut self, base: &str, domain: &str) -> Option<Domain> {
         let base = BasePool::base_ref(base)?;
         let domain = DomainValuePool::domain_value_ref(domain)?;
-        let domains = self.domains.as_mut()?;
-        let pos = domains.iter().position(|d| d.rc_matches(&base, &domain))?;
-        Some(domains.swap_remove(pos))
+        let pos = self
+            .domains
+            .iter()
+            .position(|d| d.rc_matches(&base, &domain))?;
+        Some(self.domains.swap_remove(pos))
     }
 
     /// Returns a snapshot iterator of current includes.
@@ -555,9 +526,11 @@ impl Entries {
     ///
     /// See [`Entries`] for details.
     pub fn drain_includes(&mut self) -> impl Iterator<Item = Rc<str>> + use<> {
-        self.includes.take().into_iter().flatten()
+        mem::take(&mut self.includes).into_iter()
     }
 
+    /// Returns and consume one include
+    ///
     /// <div class="warning">
     /// Warning:
     /// This method assumes the include graph to be acyclic.
@@ -565,10 +538,7 @@ impl Entries {
     ///
     /// See [`Entries`] for details.
     pub fn next_include(&mut self) -> Option<Rc<str>> {
-        let mut includes = self.includes.take()?;
-        let one = includes.pop_front();
-        self.set_includes(includes);
-        one
+        self.includes.pop_front()
     }
 
     /// Flatten domains by `base` with optional attribute filters,
@@ -620,8 +590,7 @@ impl Entries {
         base: &str,
         attr_filters: Option<&[AttrFilter]>,
     ) -> Option<FlatDomains> {
-        let domains = self.domains.take()?;
-        let mut flattened = Vec::with_capacity(domains.len());
+        let mut flattened = Vec::with_capacity(self.domains.len());
         let base = BasePool::base_ref(base)?;
         // Convert `AttrFilter` into an internal `Rc` version for fast lookup.
         // After intern lookup, comparisons in flatten/filter use `Rc::ptr_eq`
@@ -641,19 +610,14 @@ impl Entries {
         });
 
         if DRAIN {
-            self.set_domains(flatten::drain_matches(
-                domains,
+            flatten::drain_matches(
+                &mut self.domains,
                 base,
                 attr_filters.as_deref(),
                 &mut flattened,
-            ));
+            )
         } else {
-            self.set_domains(flatten::retain_all(
-                domains,
-                base,
-                attr_filters.as_deref(),
-                &mut flattened,
-            ));
+            flatten::retain_all(&self.domains, base, attr_filters.as_deref(), &mut flattened)
         }
 
         if flattened.is_empty() {
@@ -700,37 +664,27 @@ mod flatten {
     }
 
     pub(crate) fn retain_all(
-        domains: Vec<Domain>,
+        domains: &[Domain],
         base: Rc<str>,
         attr_filters: Option<&[AttrFilterIntern]>,
         flattened: &mut Vec<Domain>,
-    ) -> Vec<Domain> {
+    ) {
         domains.iter().for_each(|candidate| {
             if should_select(candidate, &base, attr_filters) {
                 flattened.push(candidate.clone());
             }
         });
-        domains
     }
 
     pub(crate) fn drain_matches(
-        domains: Vec<Domain>,
+        domains: &mut Vec<Domain>,
         base: Rc<str>,
         attr_filters: Option<&[AttrFilterIntern]>,
         flattened: &mut Vec<Domain>,
-    ) -> Vec<Domain> {
-        let domains: Vec<_> = domains
-            .into_iter()
-            .filter_map(|candidate| {
-                if should_select(&candidate, &base, attr_filters) {
-                    flattened.push(candidate);
-                    None
-                } else {
-                    Some(candidate)
-                }
-            })
-            .collect();
-        domains
+    ) {
+        flattened.extend(domains.extract_if(.., |candidate| {
+            should_select(candidate, &base, attr_filters)
+        }));
     }
 }
 
@@ -766,13 +720,12 @@ fn test_parse_entries_basic() {
 
     let mut entries = Entries::parse(BASE, content.lines());
 
-    let domains = entries.domains.take().unwrap();
-    assert_eq!(domains.len(), 2);
-    assert_eq!(domains[0].kind, DomainKind::Suffix);
-    assert_eq!(domains[0].value.as_ref(), "example.com");
-    assert_eq!(domains[0].attrs.len(), 2);
-    assert_eq!(domains[1].kind, DomainKind::Full);
-    assert_eq!(domains[1].value.as_ref(), "full.example.com");
+    assert_eq!(entries.domains.len(), 2);
+    assert_eq!(entries.domains[0].kind, DomainKind::Suffix);
+    assert_eq!(entries.domains[0].value.as_ref(), "example.com");
+    assert_eq!(entries.domains[0].attrs.len(), 2);
+    assert_eq!(entries.domains[1].kind, DomainKind::Full);
+    assert_eq!(entries.domains[1].value.as_ref(), "full.example.com");
 
     let includes: Box<_> = entries.drain_includes().collect();
     assert_eq!(includes.len(), 1);
@@ -817,7 +770,7 @@ fn test_flatten_domains() {
 
     let flat = entries.flatten_drain(BASE, None).unwrap();
 
-    assert!(entries.domains.is_none());
+    assert!(entries.domains.is_empty());
 
     let flat_domains = flat.into_vec();
     assert_eq!(flat_domains.len(), 3);
@@ -836,9 +789,7 @@ fn test_flatten_partial_domains() {
     let mut entries = Entries::parse(BASE, content.lines());
 
     let other_base = BasePool::base("other_base".into());
-    if let Some(domains) = entries.domains.as_mut() {
-        domains[0].base = other_base.clone();
-    }
+    entries.domains[0].base = other_base.clone();
 
     let flat = entries.flatten_drain(BASE, None).unwrap();
 
@@ -846,9 +797,8 @@ fn test_flatten_partial_domains() {
     assert_eq!(flat_domains.len(), 1);
     assert_eq!(flat_domains[0].base.as_ref(), BASE);
 
-    let remaining = entries.domains.as_ref().unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].base.as_ptr(), other_base.as_ptr());
+    assert_eq!(entries.domains.len(), 1);
+    assert_eq!(entries.domains[0].base.as_ptr(), other_base.as_ptr());
 }
 
 #[test]
@@ -864,7 +814,7 @@ fn test_flatten_domains_take_next() {
 
     let mut flat = entries.flatten_drain(BASE, None).unwrap();
 
-    assert!(entries.domains.is_none());
+    assert!(entries.domains.is_empty());
 
     let mut i = 0;
     while flat.take_next().is_some() {
@@ -884,7 +834,7 @@ fn test_dedup() {
 
     let flat = entries.flatten_drain(BASE, None).unwrap().into_vec();
 
-    assert!(entries.domains.is_none());
+    assert!(entries.domains.is_empty());
 
     assert_eq!(flat[0].kind, DomainKind::Keyword);
 }
