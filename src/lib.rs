@@ -43,7 +43,9 @@ use std::{
     str::Lines,
 };
 
-cfg_if::cfg_if! {
+use cfg_if::cfg_if;
+
+cfg_if! {
     if #[cfg(feature = "ahash")] {
         use ::ahash::RandomState as Hasher;
     } else if #[cfg(feature = "rustc-hash")] {
@@ -73,7 +75,7 @@ impl<T: Eq + Hash + ?Sized> Interner<T> {
         let set = self
             .set
             .as_mut()
-            .unwrap_or_else(|| panic!("PoolGuard not acquired"));
+            .expect("intern pool not initialized; missing PoolGuard");
         if let Some(v) = set.get(&s) {
             v.clone()
         } else {
@@ -235,11 +237,6 @@ pub struct Domain {
 
 impl Domain {
     #[inline(always)]
-    pub fn matches<T: AsRef<str>>(&self, base: T, value: T) -> bool {
-        self.base.as_ref() == base.as_ref() && self.value.as_ref() == value.as_ref()
-    }
-
-    #[inline(always)]
     fn rc_matches(&self, base: &Rc<str>, value: &Rc<str>) -> bool {
         Rc::ptr_eq(&self.base, base) && Rc::ptr_eq(&self.value, value)
     }
@@ -322,6 +319,14 @@ mod one_line {
     }
 }
 
+cfg_if! {
+    if #[cfg(feature = "smallvec")] {
+        type AttrSlice = ::smallvec::SmallVec<[Rc<str>; 8]>;
+    } else {
+        type AttrSlice = Box<[Rc<str>]>;
+    }
+}
+
 /// Single parsed entry
 #[derive(Debug, Clone)]
 pub enum Entry {
@@ -357,16 +362,17 @@ impl Entry {
 
         let mut parts = value.split_whitespace();
 
-        let value = parts.next()?;
-        let value = maybe_intern!(USE_POOL, value, DomainValue);
+        let value = parts
+            .next()
+            .map(|s| maybe_intern!(USE_POOL, s, DomainValue))?;
 
-        let attrs: Rc<[Rc<str>]> = parts
+        let attrs: AttrSlice = parts
             .filter_map(|s| {
                 s.strip_prefix('@')
                     .map(|s| maybe_intern!(USE_POOL, s, Attr))
             })
             .collect();
-        let attrs = maybe_intern!(USE_POOL, attrs, AttrSlice);
+        let attrs = maybe_intern!(USE_POOL, attrs.as_ref(), AttrSlice);
 
         Some(Self::Domain(Domain {
             kind,
@@ -404,8 +410,8 @@ fn test_parse_line_combinations() {
                     Entry::Include(i) => (None, Some(i)),
                 };
 
-                let attrs: Rc<[Rc<str>]> = attrs.iter().map(|s| intern!(*s, Attr)).collect();
-                let attrs = intern!(attrs, AttrSlice);
+                let attrs: AttrSlice = attrs.iter().map(|s| intern!(*s, Attr)).collect();
+                let attrs = intern!(attrs.as_ref(), AttrSlice);
 
                 let expected_domain = Some(Domain {
                     kind,
