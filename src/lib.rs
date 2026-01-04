@@ -596,6 +596,9 @@ impl Entries {
         base: &str,
         attr_filters: Option<&[AttrFilter]>,
     ) -> Option<FlatDomains> {
+        if self.domains.is_empty() {
+            return None;
+        }
         let mut flattened = Vec::with_capacity(self.domains.len());
         let base = BasePool::base_ref(base)?;
         // Convert `AttrFilter` into an internal `Rc` version for fast lookup.
@@ -606,7 +609,7 @@ impl Entries {
         // Note: If a caller provides an attribute not already in the AttrPool,
         // it will be interned on-the-fly, incurring a one-time interning cost
         // for that specific filter.
-        let attr_filters: Option<Box<[AttrFilterIntern]>> = attr_filters.map(|afs| {
+        let attr_filters: Option<AttrFilterSlice> = attr_filters.map(|afs| {
             afs.iter()
                 .map(|f| match f {
                     AttrFilter::Has(s) => AttrFilterIntern::Has(intern!(*s, Attr)),
@@ -700,6 +703,14 @@ pub enum AttrFilter<'a> {
     Lacks(&'a str),
 }
 
+cfg_if! {
+    if #[cfg(feature = "smallvec")] {
+        type AttrFilterSlice = ::smallvec::SmallVec<[AttrFilterIntern; 8]>;
+    } else {
+        type AttrFilterSlice = Box<[AttrFilterIntern]>;
+    }
+}
+
 enum AttrFilterIntern {
     Has(Rc<str>),
     Lacks(Rc<str>),
@@ -710,7 +721,6 @@ const BASE: &str = "base";
 
 #[test]
 fn test_pop_domain() {
-    let _pg = PoolGuard::acquire();
     let mut entries = Entries::parse(BASE, "example.com".lines());
     entries.pop_domain(BASE, "example.com").unwrap();
 }
