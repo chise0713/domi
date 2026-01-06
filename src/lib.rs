@@ -60,17 +60,14 @@ struct Interner<T: Eq + Hash + ?Sized> {
 }
 
 impl<T: Eq + Hash + ?Sized> Interner<T> {
-    #[inline(always)]
     fn new() -> Self {
         Self { set: None }
     }
 
-    #[inline(always)]
     fn initialize(&mut self) {
         self.set = Some(HashSet::default())
     }
 
-    #[inline(always)]
     fn intern(&mut self, s: Rc<T>) -> Rc<T> {
         let set = self
             .set
@@ -84,13 +81,11 @@ impl<T: Eq + Hash + ?Sized> Interner<T> {
         }
     }
 
-    #[inline(always)]
     fn intern_ref(&self, value: &T) -> Option<Rc<T>> {
         let set = self.set.as_ref()?;
         set.get(value).cloned()
     }
 
-    #[inline(always)]
     fn clear(&mut self) {
         self.set = None;
     }
@@ -104,19 +99,15 @@ macro_rules! define_pool {
             }
             struct [< $name Pool >];
             impl [< $name Pool >] {
-                #[inline(always)]
                 fn initialize() {
                     [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().initialize())
                 }
-                #[inline(always)]
                 fn [< $name:snake >](value: Rc<$ty>) -> Rc<$ty> {
                     [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().intern(value))
                 }
-                #[inline(always)]
                 fn [< $name:snake _ref >](value: &$ty) -> Option<Rc<$ty>> {
                     [< $name:snake:upper _POOL >].with(|p| p.borrow().intern_ref(value))
                 }
-                #[inline(always)]
                 fn clear() {
                     [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().clear())
                 }
@@ -236,7 +227,7 @@ pub struct Domain {
 }
 
 impl Domain {
-    #[inline(always)]
+    #[inline]
     fn rc_matches(&self, base: &Rc<str>, value: &Rc<str>) -> bool {
         Rc::ptr_eq(&self.base, base) && Rc::ptr_eq(&self.value, value)
     }
@@ -449,9 +440,33 @@ pub struct Entries {
 impl Entries {
     pub fn parse(base: &str, content: Lines) -> Self {
         let _pg = PoolGuard::acquire();
-        let mut domains = Vec::new();
-        let mut includes = VecDeque::new();
+        let mut ret = Self {
+            domains: Vec::new(),
+            includes: VecDeque::new(),
+            _pg,
+        };
 
+        Self::parse_inner(base, content, &mut ret.domains, &mut ret.includes);
+
+        ret
+    }
+
+    /// <div class="warning">
+    /// Warning:
+    /// This method assumes the include graph to be acyclic.
+    /// </div>
+    ///
+    /// See [`Entries`] for details.
+    pub fn parse_extend(&mut self, base: &str, content: Lines) {
+        Self::parse_inner(base, content, &mut self.domains, &mut self.includes);
+    }
+
+    fn parse_inner(
+        base: &str,
+        content: Lines,
+        domains: &mut Vec<Domain>,
+        includes: &mut VecDeque<Rc<str>>,
+    ) {
         for entry in content.filter_map(|line| {
             // Safety:
             // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
@@ -462,25 +477,6 @@ impl Entries {
                 Entry::Include(include) => includes.push_back(include),
             }
         }
-
-        Self {
-            domains,
-            includes,
-            _pg,
-        }
-    }
-
-    /// <div class="warning">
-    /// Warning:
-    /// This method assumes the include graph to be acyclic.
-    /// </div>
-    ///
-    /// See [`Entries`] for details.
-    pub fn parse_extend(&mut self, base: &str, content: Lines) {
-        let entries = Self::parse(base, content);
-
-        self.domains.extend(entries.domains);
-        self.includes.extend(entries.includes);
     }
 
     /// Returns a deduplicated set of bases.
@@ -648,6 +644,7 @@ mod flatten {
 
     use crate::{AttrFilterIntern, Domain};
 
+    #[inline]
     fn should_select(
         candidate: &Domain,
         base: &Rc<str>,
