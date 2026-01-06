@@ -146,6 +146,7 @@ thread_local! {
 
 type NotSyncNorSend = PhantomData<Rc<()>>;
 
+#[derive(Debug)]
 struct PoolGuard {
     _marker: NotSyncNorSend,
 }
@@ -169,6 +170,12 @@ impl PoolGuard {
         Self {
             _marker: NotSyncNorSend::default(),
         }
+    }
+}
+
+impl Default for PoolGuard {
+    fn default() -> Self {
+        Self::acquire()
     }
 }
 
@@ -431,6 +438,7 @@ fn test_parse_line_combinations() {
 /// - The include graph is assumed to be **acyclic**.
 /// - Cyclic includes are considered invalid data and are **not** checked
 ///   at runtime.
+#[derive(Debug, Default)]
 pub struct Entries {
     domains: Vec<Domain>,
     includes: VecDeque<Rc<str>>,
@@ -439,15 +447,8 @@ pub struct Entries {
 
 impl Entries {
     pub fn parse(base: &str, content: Lines) -> Self {
-        let _pg = PoolGuard::acquire();
-        let mut ret = Self {
-            domains: Vec::new(),
-            includes: VecDeque::new(),
-            _pg,
-        };
-
-        Self::parse_inner(base, content, &mut ret.domains, &mut ret.includes);
-
+        let mut ret = Self::default();
+        ret.parse_extend(base, content);
         ret
     }
 
@@ -458,23 +459,14 @@ impl Entries {
     ///
     /// See [`Entries`] for details.
     pub fn parse_extend(&mut self, base: &str, content: Lines) {
-        Self::parse_inner(base, content, &mut self.domains, &mut self.includes);
-    }
-
-    fn parse_inner(
-        base: &str,
-        content: Lines,
-        domains: &mut Vec<Domain>,
-        includes: &mut VecDeque<Rc<str>>,
-    ) {
         for entry in content.filter_map(|line| {
             // Safety:
             // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
             Entry::parse_line_inner::<true>(base, unsafe { OneLine::new_unchecked(line) })
         }) {
             match entry {
-                Entry::Domain(domain) => domains.push(domain),
-                Entry::Include(include) => includes.push_back(include),
+                Entry::Domain(domain) => self.domains.push(domain),
+                Entry::Include(include) => self.includes.push_back(include),
             }
         }
     }
@@ -720,6 +712,7 @@ const BASE: &str = "base";
 fn test_pop_domain() {
     let mut entries = Entries::parse(BASE, "example.com".lines());
     entries.pop_domain(BASE, "example.com").unwrap();
+    assert_eq!(0, entries.domains.len());
 }
 
 #[test]
