@@ -39,6 +39,7 @@ use std::{
     marker::PhantomData,
     mem,
     ops::Deref,
+    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
     str::Lines,
 };
@@ -160,6 +161,7 @@ impl PoolGuard {
             if n < 0 {
                 dbg!("POOL_USED_COUNT underflow", n);
             }
+            Self::clear_pools();
             AttrPool::initialize();
             BasePool::initialize();
             DomainValuePool::initialize();
@@ -170,6 +172,13 @@ impl PoolGuard {
         Self {
             _marker: NotSyncNorSend::default(),
         }
+    }
+
+    fn clear_pools() {
+        AttrPool::clear();
+        BasePool::clear();
+        DomainValuePool::clear();
+        AttrSlicePool::clear();
     }
 }
 
@@ -183,15 +192,12 @@ impl Drop for PoolGuard {
     fn drop(&mut self) {
         let n = POOL_USED_COUNT.get() - 1;
         if n <= 0 {
-            AttrPool::clear();
-            BasePool::clear();
-            DomainValuePool::clear();
-            AttrSlicePool::clear();
+            POOL_USED_COUNT.set(0);
+            let _ = catch_unwind(AssertUnwindSafe(Self::clear_pools));
             #[cfg(debug_assertions)]
             if n < 0 {
                 dbg!("POOL_USED_COUNT underflow", n);
             }
-            POOL_USED_COUNT.set(0);
         } else {
             POOL_USED_COUNT.set(n);
         }
