@@ -600,8 +600,14 @@ impl Entries {
         let attr_filters: Option<AttrFilterSlice> = attr_filters.map(|afs| {
             afs.iter()
                 .map(|f| match f {
-                    AttrFilter::Has(s) => AttrFilterIntern::Has(intern!(*s, Attr)),
-                    AttrFilter::Lacks(s) => AttrFilterIntern::Lacks(intern!(*s, Attr)),
+                    AttrFilter::Has(s) => AttrFilterIntern {
+                        id: AttrId::from(intern!(*s, Attr)),
+                        has: true,
+                    },
+                    AttrFilter::Lacks(s) => AttrFilterIntern {
+                        id: AttrId::from(intern!(*s, Attr)),
+                        has: false,
+                    },
                 })
                 .collect()
         });
@@ -649,14 +655,18 @@ mod flatten {
         match &attr_filters {
             None => true,
             Some([]) => candidate.attrs.is_empty(),
-            Some(attr_filters) => attr_filters.iter().all(|attr_filter| match attr_filter {
-                AttrFilterIntern::Has(matches) => {
-                    candidate.attrs.iter().any(|attr| Rc::ptr_eq(attr, matches))
+            Some(attr_filters) => attr_filters.iter().all(|attr_filter| {
+                if attr_filter.has {
+                    candidate
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.as_ptr() == attr_filter.id)
+                } else {
+                    candidate
+                        .attrs
+                        .iter()
+                        .all(|attr| attr.as_ptr() != attr_filter.id)
                 }
-                AttrFilterIntern::Lacks(matches) => candidate
-                    .attrs
-                    .iter()
-                    .all(|attr| !Rc::ptr_eq(attr, matches)),
             }),
         }
     }
@@ -700,9 +710,47 @@ cfg_if! {
     }
 }
 
-enum AttrFilterIntern {
-    Has(Rc<str>),
-    Lacks(Rc<str>),
+// Discards DST metadata
+// saves some stack memory
+#[derive(Debug, PartialEq, Eq)]
+#[repr(transparent)]
+struct AttrId(usize);
+
+impl From<Rc<str>> for AttrId {
+    fn from(value: Rc<str>) -> Self {
+        Self(value.as_ptr() as usize)
+    }
+}
+
+impl PartialEq<*const u8> for AttrId {
+    fn eq(&self, other: &*const u8) -> bool {
+        self.0 == *other as usize
+    }
+}
+
+impl PartialEq<AttrId> for *const u8 {
+    fn eq(&self, other: &AttrId) -> bool {
+        *self as usize == other.0
+    }
+}
+
+#[test]
+fn test_attr_id() {
+    let _pg = PoolGuard::acquire();
+    let a = AttrId::from(intern!(BASE, Attr));
+    let b = AttrId::from(intern!(BASE, Attr));
+    assert_eq!(a, b);
+}
+
+// SAFETY INVARIANTS:
+//
+// - intern pool guarantees unique allocation per string
+// - intern pool lives at least as long as all AttrFilterIntern
+// - id is only used for equality comparison
+// - id is never dereferenced
+struct AttrFilterIntern {
+    id: AttrId,
+    has: bool,
 }
 
 #[cfg(test)]

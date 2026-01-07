@@ -48,6 +48,8 @@ impl FromIterator<Rule> for RuleSet {
         let mut rules: Box<_> = iter.into_iter().collect();
         rules.sort();
         Self {
+            // https://github.com/SagerNet/sing-box/blob/v1.12.14/route/rule/rule_set_local.go#L102
+            // https://github.com/SagerNet/sing-box/blob/v1.12.14/route/rule/rule_set_remote.go#L168
             version: 1, // hard coded, no need for supporting extra rule fields
             rules,
         }

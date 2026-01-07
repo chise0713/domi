@@ -114,8 +114,8 @@ fn test_from_entries() {
     let pairs = [
         ("base1", "keyword:keyword"),
         ("base2", "regexp:regexp"),
-        ("base2", "regexp:regexp"),
-    ]; // dedup
+        ("base2", "regexp:regexp"), // dedup
+    ];
     let mut entries = crate::Entries::parse("base0", "full:full".lines());
     assert_eq!(
         pairs
