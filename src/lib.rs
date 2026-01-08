@@ -166,6 +166,8 @@ impl PoolGuard {
             BasePool::initialize();
             DomainValuePool::initialize();
             AttrSlicePool::initialize();
+        } else if n == isize::MAX {
+            panic!("Pool is poisoned due to previous panic in Drop");
         } else {
             POOL_USED_COUNT.set(n + 1);
         }
@@ -193,7 +195,9 @@ impl Drop for PoolGuard {
         let n = POOL_USED_COUNT.get() - 1;
         if n <= 0 {
             POOL_USED_COUNT.set(0);
-            let _ = catch_unwind(AssertUnwindSafe(Self::clear_pools));
+            if catch_unwind(AssertUnwindSafe(Self::clear_pools)).is_err() {
+                POOL_USED_COUNT.set(isize::MAX);
+            };
             #[cfg(debug_assertions)]
             if n < 0 {
                 dbg!("POOL_USED_COUNT underflow", n);
