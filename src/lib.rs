@@ -56,6 +56,9 @@ cfg_if! {
     }
 }
 
+#[cfg(feature = "smallvec")]
+const SMALL_VEC_STACK_SIZE: usize = 4;
+
 struct Interner<T: Eq + Hash + ?Sized> {
     set: Option<HashSet<Rc<T>, Hasher>>,
 }
@@ -135,7 +138,7 @@ macro_rules! maybe_intern {
 macro_rules! intern {
     ($s:expr, $name:ident) => {
         ::paste::paste! {
-            [<$name Pool>]::[<$name:snake _ref>]($s.as_ref())
+            crate::[<$name Pool>]::[<$name:snake _ref>]($s.as_ref())
                 .unwrap_or_else(|| [<$name Pool>]::[<$name:snake>](Rc::from($s)))
         }
     };
@@ -329,7 +332,7 @@ mod one_line {
 
 cfg_if! {
     if #[cfg(feature = "smallvec")] {
-        type AttrSlice = ::smallvec::SmallVec<[Rc<str>; 8]>;
+        type AttrSlice = ::smallvec::SmallVec<[Rc<str>; SMALL_VEC_STACK_SIZE]>;
     } else {
         type AttrSlice = Box<[Rc<str>]>;
     }
@@ -611,11 +614,11 @@ impl Entries {
             afs.iter()
                 .map(|f| match f {
                     AttrFilter::Has(s) => AttrFilterIntern {
-                        id: AttrId::from(intern!(*s, Attr)),
+                        id: AttrId::from_interned(intern!(*s, Attr)),
                         has: true,
                     },
                     AttrFilter::Lacks(s) => AttrFilterIntern {
-                        id: AttrId::from(intern!(*s, Attr)),
+                        id: AttrId::from_interned(intern!(*s, Attr)),
                         has: false,
                     },
                 })
@@ -714,7 +717,7 @@ pub enum AttrFilter<'a> {
 
 cfg_if! {
     if #[cfg(feature = "smallvec")] {
-        type AttrFilterSlice = ::smallvec::SmallVec<[AttrFilterIntern; 8]>;
+        type AttrFilterSlice = ::smallvec::SmallVec<[AttrFilterIntern; SMALL_VEC_STACK_SIZE]>;
     } else {
         type AttrFilterSlice = Box<[AttrFilterIntern]>;
     }
@@ -726,8 +729,8 @@ cfg_if! {
 #[repr(transparent)]
 struct AttrId(usize);
 
-impl From<Rc<str>> for AttrId {
-    fn from(value: Rc<str>) -> Self {
+impl AttrId {
+    fn from_interned(value: Rc<str>) -> Self {
         Self(value.as_ptr() as usize)
     }
 }
@@ -747,8 +750,8 @@ impl PartialEq<AttrId> for *const u8 {
 #[test]
 fn test_attr_id() {
     let _pg = PoolGuard::acquire();
-    let a = AttrId::from(intern!(BASE, Attr));
-    let b = AttrId::from(intern!(BASE, Attr));
+    let a = AttrId::from_interned(intern!(BASE, Attr));
+    let b = AttrId::from_interned(intern!(BASE, Attr));
     assert_eq!(a, b);
 }
 
@@ -921,8 +924,8 @@ mod sort_predictable {
 
     pub(crate) fn test<T, K, F, C>(mut build: F, mut cmp: C)
     where
-        F: FnMut(FlatDomains) -> T,
         K: Ord,
+        F: FnMut(FlatDomains) -> T,
         C: FnMut(&T) -> K,
     {
         let list: [T; VARIANT_LEN] = array::from_fn(|i| {
