@@ -28,8 +28,12 @@ impl From<FlatDomains> for Rule {
     fn from(mut flat: FlatDomains) -> Self {
         let mut rule = Self::default();
 
-        while let Some((kind, values)) = flat.take_next() {
-            let values: Box<[_]> = values.into_iter().map(|v| Box::from(v.as_ref())).collect();
+        while let Some(domains) = flat.take_next() {
+            let kind = domains.first().unwrap().kind;
+            let values: Box<[_]> = domains
+                .into_iter()
+                .map(|d| Box::from(d.value.as_ref()))
+                .collect();
             match kind {
                 DomainKind::Suffix => rule.domain_suffix = Some(values),
                 DomainKind::Full => rule.domain = Some(values),

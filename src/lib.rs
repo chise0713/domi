@@ -126,13 +126,13 @@ define_pool!(DomainValue, str);
 define_pool!(AttrSlice, [Rc<str>]);
 
 macro_rules! maybe_intern {
-    ($use_pool:expr, $s:expr, $name:ident) => {{
+    ($use_pool:expr, $s:expr, $name:ident) => {
         if !$use_pool {
             Rc::from($s)
         } else {
             intern!($s, $name)
         }
-    }};
+    };
 }
 
 macro_rules! intern {
@@ -642,7 +642,7 @@ impl Entries {
 
         flattened.sort_by(|a, b| {
             b.kind
-                .cmp(&a.kind) // reverse kind order to enable efficient tail `Vec::drain()`.
+                .cmp(&a.kind) // reverse kind order for `Vec::split_off()`.
                 .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
         });
         flattened.dedup();
@@ -813,15 +813,15 @@ impl FlatDomains {
         self.inner
     }
 
-    /// inner [`Vec<Domain>`][Domain] will be [`Vec::drain`]
+    /// inner [`Vec<Domain>`][Domain] will be [`Vec::split_off`]
     /// at the next kind index to reduce allocations.
     ///
     /// At most one call per [`DomainKind`] variant (maximum 4 calls).
-    pub fn take_next(&mut self) -> Option<(DomainKind, Box<[Rc<str>]>)> {
+    pub fn take_next(&mut self) -> Option<Box<[Domain]>> {
         let kind = self.inner.last()?.kind;
         let idx = self.inner.partition_point(|d| d.kind != kind);
-        let v: Box<[_]> = self.inner.drain(idx..).map(|d| d.value).collect();
-        (!v.is_empty()).then_some((kind, v))
+        let v = self.inner.split_off(idx).into_boxed_slice();
+        (!v.is_empty()).then_some(v)
     }
 }
 
