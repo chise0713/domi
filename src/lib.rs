@@ -506,6 +506,22 @@ impl Entries {
         Some(self.domains.swap_remove(pos))
     }
 
+    /// Take and returns the inner [`Vec<Domain>`][Domain], reversed ordered by [`DomainKind`].
+    ///
+    /// Domains are grouped by [`DomainKind`] and sorted lexicographically by value.
+    pub fn take_domains(&mut self) -> Vec<Domain> {
+        let mut r = mem::take(&mut self.domains);
+
+        r.sort_by(|a, b| {
+            b.kind
+                .cmp(&a.kind) // reverse kind order
+                .then_with(|| a.value.cmp(&b.value)) // sort value by dictionary order
+        });
+        r.dedup();
+
+        r
+    }
+
     /// Returns a snapshot iterator of current includes.
     ///
     /// Note:
@@ -614,11 +630,11 @@ impl Entries {
             afs.iter()
                 .map(|f| match f {
                     AttrFilter::Has(s) => AttrFilterIntern {
-                        id: AttrId::from_interned(intern!(*s, Attr)),
+                        id: unsafe { AttrId::from_interned(intern!(*s, Attr)) },
                         has: true,
                     },
                     AttrFilter::Lacks(s) => AttrFilterIntern {
-                        id: AttrId::from_interned(intern!(*s, Attr)),
+                        id: unsafe { AttrId::from_interned(intern!(*s, Attr)) },
                         has: false,
                     },
                 })
@@ -730,7 +746,7 @@ cfg_if! {
 struct AttrId(usize);
 
 impl AttrId {
-    fn from_interned(value: Rc<str>) -> Self {
+    unsafe fn from_interned(value: Rc<str>) -> Self {
         Self(value.as_ptr() as usize)
     }
 }
@@ -750,8 +766,8 @@ impl PartialEq<AttrId> for *const u8 {
 #[test]
 fn test_attr_id() {
     let _pg = PoolGuard::acquire();
-    let a = AttrId::from_interned(intern!(BASE, Attr));
-    let b = AttrId::from_interned(intern!(BASE, Attr));
+    let a = unsafe { AttrId::from_interned(intern!(BASE, Attr)) };
+    let b = unsafe { AttrId::from_interned(intern!(BASE, Attr)) };
     assert_eq!(a, b);
 }
 
@@ -793,6 +809,8 @@ fn test_parse_entries_basic() {
     assert_eq!(entries.domains[0].attrs.len(), 2);
     assert_eq!(entries.domains[1].kind, DomainKind::Full);
     assert_eq!(entries.domains[1].value.as_ref(), "full.example.com");
+
+    assert_eq!(entries.take_domains().len(), 2);
 
     let includes: Box<_> = entries.drain_includes().collect();
     assert_eq!(includes.len(), 1);
