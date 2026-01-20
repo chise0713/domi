@@ -629,14 +629,12 @@ impl Entries {
         let attr_filters: Option<AttrFilterSlice> = attr_filters.map(|afs| {
             afs.iter()
                 .map(|f| match f {
-                    AttrFilter::Has(s) => AttrFilterIntern {
-                        id: unsafe { AttrId::from_interned(intern!(*s, Attr)) },
-                        has: true,
-                    },
-                    AttrFilter::Lacks(s) => AttrFilterIntern {
-                        id: unsafe { AttrId::from_interned(intern!(*s, Attr)) },
-                        has: false,
-                    },
+                    AttrFilter::Has(s) => {
+                        PackedAttr::new(unsafe { AttrId::from_interned(intern!(*s, Attr)) }, true)
+                    }
+                    AttrFilter::Lacks(s) => {
+                        PackedAttr::new(unsafe { AttrId::from_interned(intern!(*s, Attr)) }, false)
+                    }
                 })
                 .collect()
         });
@@ -669,13 +667,13 @@ impl Entries {
 mod flatten {
     use std::rc::Rc;
 
-    use crate::{AttrFilterIntern, Domain};
+    use crate::{Domain, PackedAttr};
 
     #[inline]
     fn should_select(
         candidate: &Domain,
         base: &Rc<str>,
-        attr_filters: Option<&[AttrFilterIntern]>,
+        attr_filters: Option<&[PackedAttr]>,
     ) -> bool {
         if !Rc::ptr_eq(base, &candidate.base) {
             return false;
@@ -684,17 +682,17 @@ mod flatten {
         match &attr_filters {
             None => true,
             Some([]) => candidate.attrs.is_empty(),
-            Some(attr_filters) => attr_filters.iter().all(|attr_filter| {
-                if attr_filter.has {
+            Some(attr_filters) => attr_filters.iter().all(|packed_attr| {
+                if packed_attr.tag() {
                     candidate
                         .attrs
                         .iter()
-                        .any(|attr| attr.as_ptr() == attr_filter.id)
+                        .any(|attr| attr.as_ptr() as usize == packed_attr.addr())
                 } else {
                     candidate
                         .attrs
                         .iter()
-                        .all(|attr| attr.as_ptr() != attr_filter.id)
+                        .all(|attr| attr.as_ptr() as usize != packed_attr.addr())
                 }
             }),
         }
@@ -703,7 +701,7 @@ mod flatten {
     pub(crate) fn retain_all(
         domains: &[Domain],
         base: Rc<str>,
-        attr_filters: Option<&[AttrFilterIntern]>,
+        attr_filters: Option<&[PackedAttr]>,
         flattened: &mut Vec<Domain>,
     ) {
         domains.iter().for_each(|candidate| {
@@ -716,7 +714,7 @@ mod flatten {
     pub(crate) fn drain_matches(
         domains: &mut Vec<Domain>,
         base: Rc<str>,
-        attr_filters: Option<&[AttrFilterIntern]>,
+        attr_filters: Option<&[PackedAttr]>,
         flattened: &mut Vec<Domain>,
     ) {
         flattened.extend(domains.extract_if(.., |candidate| {
@@ -733,53 +731,95 @@ pub enum AttrFilter<'a> {
 
 cfg_if! {
     if #[cfg(feature = "smallvec")] {
-        type AttrFilterSlice = ::smallvec::SmallVec<[AttrFilterIntern; SMALL_VEC_STACK_SIZE]>;
+        type AttrFilterSlice = ::smallvec::SmallVec<[PackedAttr; SMALL_VEC_STACK_SIZE]>;
     } else {
-        type AttrFilterSlice = Box<[AttrFilterIntern]>;
+        type AttrFilterSlice = Box<[PackedAttr]>;
     }
 }
 
 // Discards DST metadata
 // saves some stack memory
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 struct AttrId(usize);
 
 impl AttrId {
+    #[inline(always)]
     unsafe fn from_interned(value: Rc<str>) -> Self {
         Self(value.as_ptr() as usize)
     }
 }
 
-impl PartialEq<*const u8> for AttrId {
-    fn eq(&self, other: &*const u8) -> bool {
-        self.0 == *other as usize
-    }
+#[repr(transparent)]
+struct PackedAttr {
+    inner: usize,
 }
 
-impl PartialEq<AttrId> for *const u8 {
-    fn eq(&self, other: &AttrId) -> bool {
-        *self as usize == other.0
+impl PackedAttr {
+    const TAG_MASK: usize = 0x1;
+    const ADDR_MASK: usize = !Self::TAG_MASK;
+
+    #[inline(always)]
+    pub const fn new(attr_id: AttrId, tag: bool) -> Self {
+        let AttrId(ptr_addr) = attr_id;
+        assert!(ptr_addr.is_multiple_of(2));
+        Self {
+            inner: ptr_addr | tag as usize,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn addr(&self) -> usize {
+        self.inner & Self::ADDR_MASK
+    }
+
+    #[inline(always)]
+    pub const fn tag(&self) -> bool {
+        (self.inner & Self::TAG_MASK) != 0
     }
 }
 
 #[test]
-fn test_attr_id() {
-    let _pg = PoolGuard::acquire();
-    let a = unsafe { AttrId::from_interned(intern!(BASE, Attr)) };
-    let b = unsafe { AttrId::from_interned(intern!(BASE, Attr)) };
-    assert_eq!(a, b);
+fn test_packed_attr_logic() {
+    let original_addr = 0x12345670_usize;
+    let attr_id = AttrId(original_addr);
+
+    let packed_true = PackedAttr::new(attr_id, true);
+    assert!(packed_true.tag());
+    assert_eq!(packed_true.addr(), original_addr,);
+    assert_eq!(packed_true.inner, original_addr | 1);
+
+    let packed_false = PackedAttr::new(attr_id, false);
+    assert!(!packed_false.tag());
+    assert_eq!(packed_false.addr(), original_addr,);
+    assert_eq!(packed_false.inner, original_addr);
 }
 
-// SAFETY INVARIANTS:
-//
-// - intern pool guarantees unique allocation per string
-// - intern pool lives at least as long as all AttrFilterIntern
-// - id is only used for equality comparison
-// - id is never dereferenced
-struct AttrFilterIntern {
-    id: AttrId,
-    has: bool,
+#[test]
+fn test_with_real_pointer() {
+    let val = Box::new(42);
+    let ptr_addr = &*val as *const i32 as usize;
+
+    assert_eq!(ptr_addr & 0x1, 0,);
+
+    let attr_id = AttrId(ptr_addr);
+
+    let p1 = PackedAttr::new(attr_id, true);
+    let p2 = PackedAttr::new(attr_id, false);
+
+    assert!(p1.tag());
+    assert!(!p2.tag());
+    assert_eq!(p1.addr(), ptr_addr);
+    assert_eq!(p2.addr(), ptr_addr);
+}
+
+#[test]
+fn test_const_capability() {
+    const ADDR: AttrId = AttrId(0x1000);
+    const PACKED: PackedAttr = PackedAttr::new(ADDR, true);
+
+    const { assert!(PACKED.tag()) };
+    assert_eq!(PACKED.addr(), 0x1000);
 }
 
 #[cfg(test)]
