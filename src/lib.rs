@@ -59,11 +59,17 @@ cfg_if! {
 #[cfg(feature = "smallvec")]
 const SMALL_VEC_STACK_SIZE: usize = 4;
 
-struct Interner<T: Eq + Hash + ?Sized> {
+struct Interner<T>
+where
+    T: Eq + Hash + ?Sized,
+{
     set: Option<HashSet<Rc<T>, Hasher>>,
 }
 
-impl<T: Eq + Hash + ?Sized> Interner<T> {
+impl<T> Interner<T>
+where
+    T: Eq + Hash + ?Sized,
+{
     fn new() -> Self {
         Self { set: None }
     }
@@ -92,6 +98,22 @@ impl<T: Eq + Hash + ?Sized> Interner<T> {
 
     fn clear(&mut self) {
         self.set = None;
+    }
+}
+
+// Discards DST metadata
+// saves some stack memory
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+struct InternId(usize);
+
+impl InternId {
+    /// # Safety
+    ///
+    /// MUST be Intern-ed by Interner
+    #[inline(always)]
+    unsafe fn from_interned<T: ?Sized>(value: Rc<T>) -> Self {
+        Self(Rc::as_ptr(&value).addr())
     }
 }
 
@@ -630,11 +652,12 @@ impl Entries {
             afs.iter()
                 .map(|f| match f {
                     AttrFilter::Has(s) => {
-                        PackedAttr::new(unsafe { AttrId::from_interned(intern!(*s, Attr)) }, true)
+                        PackedAttr::new(unsafe { InternId::from_interned(intern!(*s, Attr)) }, true)
                     }
-                    AttrFilter::Lacks(s) => {
-                        PackedAttr::new(unsafe { AttrId::from_interned(intern!(*s, Attr)) }, false)
-                    }
+                    AttrFilter::Lacks(s) => PackedAttr::new(
+                        unsafe { InternId::from_interned(intern!(*s, Attr)) },
+                        false,
+                    ),
                 })
                 .collect()
         });
@@ -737,19 +760,6 @@ cfg_if! {
     }
 }
 
-// Discards DST metadata
-// saves some stack memory
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-struct AttrId(usize);
-
-impl AttrId {
-    #[inline(always)]
-    unsafe fn from_interned(value: Rc<str>) -> Self {
-        Self(value.as_ptr() as usize)
-    }
-}
-
 #[repr(transparent)]
 struct PackedAttr {
     inner: usize,
@@ -760,8 +770,8 @@ impl PackedAttr {
     const ADDR_MASK: usize = !Self::TAG_MASK;
 
     #[inline(always)]
-    pub const fn new(attr_id: AttrId, tag: bool) -> Self {
-        let AttrId(ptr_addr) = attr_id;
+    pub const fn new(attr_id: InternId, tag: bool) -> Self {
+        let InternId(ptr_addr) = attr_id;
         assert!(ptr_addr.is_multiple_of(2));
         Self {
             inner: ptr_addr | tag as usize,
@@ -782,7 +792,7 @@ impl PackedAttr {
 #[test]
 fn test_packed_attr_logic() {
     let original_addr = 0x12345670_usize;
-    let attr_id = AttrId(original_addr);
+    let attr_id = InternId(original_addr);
 
     let packed_true = PackedAttr::new(attr_id, true);
     assert!(packed_true.tag());
@@ -802,7 +812,7 @@ fn test_with_real_pointer() {
 
     assert_eq!(ptr_addr & 0x1, 0,);
 
-    let attr_id = AttrId(ptr_addr);
+    let attr_id = InternId(ptr_addr);
 
     let p1 = PackedAttr::new(attr_id, true);
     let p2 = PackedAttr::new(attr_id, false);
@@ -815,7 +825,7 @@ fn test_with_real_pointer() {
 
 #[test]
 fn test_const_capability() {
-    const ADDR: AttrId = AttrId(0x1000);
+    const ADDR: InternId = InternId(0x1000);
     const PACKED: PackedAttr = PackedAttr::new(ADDR, true);
 
     const { assert!(PACKED.tag()) };
