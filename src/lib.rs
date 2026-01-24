@@ -3,6 +3,12 @@
 //! [domain-list-community](https://github.com/v2fly/domain-list-community)
 //! data source.
 //!
+//!
+//! <div class="warning">
+//! Warning:
+//! The crate is not updated with official implementation, DO NOT use in production
+//! </div>
+//!
 //! ## Example
 //! ```rust,no_run
 //! use std::{fs, path::Path};
@@ -17,7 +23,7 @@
 //!     let mut entries = Entries::parse(BASE, content.lines());
 //!     while let Some(i) = entries.next_include() {
 //!         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-//!         entries.parse_extend(BASE, include.lines());
+//!         entries.parse_extend(i.as_ref(), BASE, include.lines());
 //!     }
 //!     // expect: domain_keyword: Some(["fitbit", "google"])
 //!     // change the `Some(&[])` to something else can alter behavier,
@@ -467,33 +473,26 @@ fn test_parse_line_combinations() {
 ///
 /// While an [`Entries`] value is alive, internal string intern pools are kept alive.
 /// They are automatically cleared when the last [`Entries`] is dropped on the thread.
-///
-/// ## Invariants
-///
-/// - The include graph is assumed to be **acyclic**.
-/// - Cyclic includes are considered invalid data and are **not** checked
-///   at runtime.
 #[derive(Debug, Default)]
 pub struct Entries {
     domains: Vec<Domain>,
     includes: VecDeque<Rc<str>>,
+    parsed_id: BTreeSet<Rc<str>>,
     _pg: PoolGuard,
 }
 
 impl Entries {
     pub fn parse(base: &str, content: Lines) -> Self {
         let mut ret = Self::default();
-        ret.parse_extend(base, content);
+        ret.parse_extend(base, base, content);
         ret
     }
 
-    /// <div class="warning">
-    /// Warning:
-    /// This method assumes the include graph to be acyclic.
-    /// </div>
-    ///
-    /// See [`Entries`] for details.
-    pub fn parse_extend(&mut self, base: &str, content: Lines) {
+    pub fn parse_extend(&mut self, current: &str, base: &str, content: Lines) {
+        let id = intern!(current, Base);
+        if self.parsed_id.contains(&id) {
+            return;
+        };
         for entry in content.filter_map(|line| {
             // Safety:
             // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
@@ -504,6 +503,7 @@ impl Entries {
                 Entry::Include(include) => self.includes.push_back(include),
             }
         }
+        self.parsed_id.insert(id);
     }
 
     /// Returns a deduplicated set of bases.
@@ -560,28 +560,14 @@ impl Entries {
     /// # let mut entries = Entries::parse(BASE, "".lines());
     /// while let Some(i) = entries.drain_includes().next() {
     ///     let include = fs::read_to_string(i.as_ref()).unwrap();
-    ///     entries.parse_extend(BASE, include.lines());
+    ///     entries.parse_extend(i.as_ref(), BASE, include.lines());
     /// }
     /// ```
-    ///
-    /// <div class="warning">
-    /// Warning:
-    /// This method assumes the include graph to be acyclic.
-    /// </div>
-    ///
-    /// See [`Entries`] for details.
     pub fn drain_includes(&mut self) -> impl Iterator<Item = Rc<str>> + use<> {
         mem::take(&mut self.includes).into_iter()
     }
 
     /// Returns and consume one include
-    ///
-    /// <div class="warning">
-    /// Warning:
-    /// This method assumes the include graph to be acyclic.
-    /// </div>
-    ///
-    /// See [`Entries`] for details.
     pub fn next_include(&mut self) -> Option<Rc<str>> {
         self.includes.pop_front()
     }

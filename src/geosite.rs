@@ -120,7 +120,7 @@ fn test_from_entries() {
     assert_eq!(
         pairs
             .iter()
-            .map(|(base, content)| entries.parse_extend(base, content.lines()))
+            .map(|(base, content)| entries.parse_extend(base, base, content.lines()))
             .count(),
         3
     );

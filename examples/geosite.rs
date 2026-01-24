@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
 use domi::{
-    geosite::proto::{GeoSite, GeoSiteList},
     AttrFilter, Entries,
+    geosite::proto::{GeoSite, GeoSiteList},
 };
 use prost::Message as _;
 
@@ -14,7 +14,7 @@ fn main() {
     let mut entries = Entries::parse(BASE, content.lines());
     while let Some(i) = entries.next_include() {
         let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-        entries.parse_extend(BASE, include.lines());
+        entries.parse_extend(i.as_ref(), BASE, include.lines());
     }
     // change the `Some(&[AttrFilter::Lacks("attr2")])` to something else can alter behavier,
     // see crate::Entries
