@@ -12,7 +12,7 @@ use proto::{
     domain::{Attribute, Type, attribute::TypedValue},
 };
 
-use crate::{DomainKind, Entries, FlatDomains};
+use crate::{DomainKind, Entries, Entry, FlatDomains, Kind};
 
 impl<S: AsRef<str>> From<S> for Attribute {
     fn from(value: S) -> Self {
@@ -23,9 +23,12 @@ impl<S: AsRef<str>> From<S> for Attribute {
     }
 }
 
-impl From<crate::Domain> for proto::Domain {
-    fn from(crate_domain: crate::Domain) -> Self {
-        let typ = match crate_domain.kind {
+impl From<Entry> for proto::Domain {
+    fn from(entry: Entry) -> Self {
+        let Kind::Domain(kind) = entry.kind else {
+            unreachable!("not a domain kind");
+        };
+        let typ = match kind {
             DomainKind::Suffix => Type::RootDomain,
             DomainKind::Full => Type::Full,
             DomainKind::Keyword => Type::Plain,
@@ -33,8 +36,8 @@ impl From<crate::Domain> for proto::Domain {
         };
         Self {
             r#type: typ.into(),
-            value: crate_domain.value.to_string(),
-            attribute: crate_domain.attrs.iter().map(Attribute::from).collect(),
+            value: entry.value.to_string(),
+            attribute: entry.attrs.iter().map(Attribute::from).collect(),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::{DomainKind, FlatDomains};
+use crate::{DomainKind, FlatDomains, Kind};
 
 /// [sing-box rule-set source structure](https://sing-box.sagernet.org/configuration/rule-set/source-format/#structure)
 #[derive(Debug, Default, Serialize, Clone)]
@@ -29,7 +29,9 @@ impl From<FlatDomains> for Rule {
         let mut rule = Self::default();
 
         while let Some(domains) = flat.take_next() {
-            let kind = domains.first().unwrap().kind;
+            let Kind::Domain(kind) = domains.first().unwrap().kind else {
+                unreachable!("not a domain kind");
+            };
             let values: Box<[_]> = domains
                 .into_iter()
                 .map(|d| Box::from(d.value.as_ref()))
