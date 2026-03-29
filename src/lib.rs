@@ -293,7 +293,11 @@ pub struct Entry {
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> Ordering {
         match (&self.kind, &other.kind) {
-            (Kind::Include, Kind::Include) => Ordering::Equal,
+            (Kind::Include, Kind::Include) => self
+                .value
+                .cmp(&other.value)
+                .then_with(|| self.base.cmp(&other.base))
+                .then_with(|| self.attrs.cmp(&other.attrs)),
             (Kind::Include, _) => Ordering::Less,
             (_, Kind::Include) => Ordering::Greater,
 
