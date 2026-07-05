@@ -336,4 +336,19 @@ mod tests {
         const _: () = assert!(PACKED.tag());
         assert_eq!(PACKED.addr(), 0x1000);
     }
+
+    #[test]
+    fn intern_id_hasher() {
+        use std::{
+            assert_matches,
+            panic::{AssertUnwindSafe, catch_unwind},
+        };
+
+        let mut h: HashSet<usize, InternIdHasher> = HashSet::default();
+        h.insert(1);
+        h.insert(2);
+
+        let mut h: HashSet<u8, InternIdHasher> = HashSet::default();
+        assert_matches!(catch_unwind(AssertUnwindSafe(|| h.insert(1))), Err(_));
+    }
 }

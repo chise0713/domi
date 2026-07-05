@@ -78,12 +78,12 @@ jobs:
           repo-token: ${{ github.token }}
       - name: Set `{PROTOC,PROTOC_PATH}` env
         run: |
-          tailing=""
+          trailing=""
           if [[ "${{ matrix.platform.runs-on }}" == "windows-latest" ]]; then
-            tailing=".exe"
+            trailing=".exe"
           fi
           echo "PROTOC_PATH=${{ steps.protoc.outputs.path }}" >> ${{ github.env }}
-          echo "PROTOC=${{ steps.protoc.outputs.path }}/bin/protoc$tailing" >> ${{ github.env }}
+          echo "PROTOC=${{ steps.protoc.outputs.path }}/bin/protoc$trailing" >> ${{ github.env }}
         shell: bash
       - name: Checkout the repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
