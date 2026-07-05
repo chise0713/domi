@@ -5,22 +5,26 @@ domi provides abstractions and utilities for [domain-list-community](https://git
 ```rust
 use std::{fs, path::Path};
 
-use domi::{srs::Rule, Entries};
+use domi::Entries;
 
 const BASE: &str = "alphabet";
 
 fn main() {
     let data_root = Path::new("data");
+
     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
+
     let mut entries = Entries::parse(BASE, content.lines());
+
     while let Some(i) = entries.next_include() {
-        let include = fs::read_to_string(data_root.join(i.as_ref())).unwrap();
-        entries.parse_extend(BASE, include.lines());
+        if entries.is_included(i.target()) {
+            continue;
+        }
+        let include = fs::read_to_string(data_root.join(i.target())).unwrap();
+        entries.parse_include(i.target(), include.lines());
     }
-    // expect: domain_keyword: Some(["fitbit", "google"])
-    // change the `Some(&[])` to something else can alter behavier,
-    // see crate::Entries
-    println!("{:?}", Rule::from(entries.flatten(BASE, Some(&[])).unwrap()))
+
+    println!("{:?}", entries)
 }
 ```
 

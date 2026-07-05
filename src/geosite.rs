@@ -44,10 +44,13 @@ impl From<Entry> for proto::Domain {
 
 impl From<FlatDomains> for GeoSite {
     fn from(flat: FlatDomains) -> Self {
-        let domains = flat.into_vec();
         GeoSite {
-            country_code: domains[0].base.to_string(), // it's flattened
-            domain: domains.into_iter().map(proto::Domain::from).collect(),
+            country_code: flat.base().to_owned(),
+            domain: flat
+                .into_vec()
+                .into_iter()
+                .map(proto::Domain::from)
+                .collect(),
         }
     }
 }
@@ -73,63 +76,68 @@ impl From<Entries> for GeoSiteList {
     }
 }
 
-#[test]
-fn test_sort_predictable() {
-    crate::sort_predictable::test(
-        |domains| GeoSiteList::from_iter([GeoSite::from(domains)]),
-        |list| {
-            list.entry
-                .iter()
-                .map(|s| s.country_code.clone())
-                .collect::<Box<[_]>>()
-        },
-    );
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[test]
-fn test_from_iter() {
-    use crate::BASE;
-    const CONTENT: &str = "\
+    #[test]
+    fn sort_predictable() {
+        crate::sort_predictable::helper(
+            |domains| GeoSiteList::from_iter([GeoSite::from(domains)]),
+            |list| {
+                list.entry
+                    .iter()
+                    .map(|s| s.country_code.clone())
+                    .collect::<Box<[_]>>()
+            },
+        );
+    }
+
+    #[test]
+    fn from_iter() {
+        use crate::BASE;
+        const CONTENT: &str = "\
             keyword:keyword
             keyword:keyword # dedup
         ";
 
-    let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
-    let flattened = entries.flatten(BASE, None).unwrap();
-    let geosite_list = GeoSiteList::from_iter([GeoSite::from(flattened)]);
-    assert_eq!(geosite_list.entry.len(), 1);
-    assert_eq!(
-        geosite_list.entry.into_iter().next().unwrap(),
-        GeoSite {
-            country_code: BASE.into(),
-            domain: [proto::Domain {
-                r#type: Type::Plain.into(),
-                value: "keyword".into(),
-                attribute: [].into()
-            }]
-            .into()
-        }
-    )
-}
+        let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
+        let flattened = entries.flatten(BASE, None).unwrap();
+        let geosite_list = GeoSiteList::from_iter([GeoSite::from(flattened)]);
+        assert_eq!(geosite_list.entry.len(), 1);
+        assert_eq!(
+            geosite_list.entry.into_iter().next().unwrap(),
+            GeoSite {
+                country_code: BASE.into(),
+                domain: [proto::Domain {
+                    r#type: Type::Plain.into(),
+                    value: "keyword".into(),
+                    attribute: [].into()
+                }]
+                .into()
+            }
+        )
+    }
 
-#[test]
-fn test_from_entries() {
-    let pairs = [
-        ("base1", "keyword:keyword"),
-        ("base2", "regexp:regexp"),
-        ("base2", "regexp:regexp"), // dedup
-    ];
-    let mut entries = crate::Entries::parse("base0", "full:full".lines());
-    assert_eq!(
-        pairs
-            .iter()
-            .map(|(base, content)| entries.parse_extend(base, base, content.lines()))
-            .count(),
-        3
-    );
-    let geosite_list = GeoSiteList::from(entries);
-    assert_eq!(
-        geosite_list.entry.len(),
-        3 // base0 + base1 + base2
-    )
+    #[test]
+    fn from_entries() {
+        let pairs = [
+            ("base1", "keyword:keyword"),
+            ("base2", "regexp:regexp"),
+            ("base2", "regexp:regexp"), // dedup
+        ];
+        let mut entries = crate::Entries::parse("base0", "full:full".lines());
+        assert_eq!(
+            pairs
+                .iter()
+                .map(|(base, content)| entries.parse_include(base, content.lines()))
+                .count(),
+            3
+        );
+        let geosite_list = GeoSiteList::from(entries);
+        assert_eq!(
+            geosite_list.entry.len(),
+            3 // base0 + base1 + base2
+        )
+    }
 }

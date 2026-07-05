@@ -32,10 +32,12 @@ impl From<FlatDomains> for Rule {
             let Kind::Domain(kind) = domains.first().unwrap().kind else {
                 unreachable!("not a domain kind");
             };
-            let values: Box<[_]> = domains
+            let mut values: Vec<_> = domains
                 .into_iter()
                 .map(|d| Box::from(d.value.as_ref()))
                 .collect();
+            values.dedup();
+            let values = values.into_boxed_slice();
             match kind {
                 DomainKind::Suffix => rule.domain_suffix = Some(values),
                 DomainKind::Full => rule.domain = Some(values),
@@ -62,38 +64,43 @@ impl FromIterator<Rule> for RuleSet {
     }
 }
 
-#[test]
-fn test_sort_predictable() {
-    crate::sort_predictable::test(
-        |domains| RuleSet::from_iter([Rule::from(domains)]),
-        |list| list.rules.clone(),
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[test]
-fn test_from_iter() {
-    use crate::BASE;
-    const CONTENT: &str = "\
+    #[test]
+    fn sort_predictable() {
+        crate::sort_predictable::helper(
+            |domains| RuleSet::from_iter([Rule::from(domains)]),
+            |list| list.rules.clone(),
+        )
+    }
+
+    #[test]
+    fn from_iter() {
+        use crate::BASE;
+        const CONTENT: &str = "\
             keyword:keyword
             keyword:keyword # dedup
         ";
 
-    let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
-    let flattened = entries.flatten(BASE, None).unwrap();
-    let rule_set = RuleSet::from_iter([Rule::from(flattened)]);
-    assert_eq!(rule_set.rules.len(), 1);
-    assert_eq!(
-        rule_set
-            .rules
-            .into_iter()
-            .next()
-            .unwrap()
-            .domain_keyword
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap()
-            .as_ref(),
-        "keyword"
-    )
+        let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
+        let flattened = entries.flatten(BASE, None).unwrap();
+        let rule_set = RuleSet::from_iter([Rule::from(flattened)]);
+        assert_eq!(rule_set.rules.len(), 1);
+        assert_eq!(
+            rule_set
+                .rules
+                .into_iter()
+                .next()
+                .unwrap()
+                .domain_keyword
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap()
+                .as_ref(),
+            "keyword"
+        )
+    }
 }

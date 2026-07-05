@@ -4,11 +4,6 @@
 //! data source.
 //!
 //!
-//! <div class="warning">
-//! Warning:
-//! The crate is not updated with official implementation, DO NOT use in production
-//! </div>
-//!
 //! ## Example
 //! ```rust,no_run
 //! use std::{fs, path::Path};
@@ -19,15 +14,19 @@
 //!
 //! fn main() {
 //!     let data_root = Path::new("data");
+//!
 //!     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
+//!
 //!     let mut entries = Entries::parse(BASE, content.lines());
+//!
 //!     while let Some(i) = entries.next_include() {
-//!         let include = fs::read_to_string(data_root.join(i.base.as_ref())).unwrap();
-//!         entries.parse_extend(i.base.as_ref(), BASE, include.lines());
+//!         if entries.is_included(i.target()) {
+//!             continue;
+//!         }
+//!         let include = fs::read_to_string(data_root.join(i.target())).unwrap();
+//!         entries.parse_include(i.target(), include.lines());
 //!     }
-//!     // expect: domain_keyword: Some(["fitbit", "google"])
-//!     // change the `Some(&[])` to something else can alter behavier,
-//!     // see crate::Entries
+//!
 //!     println!("{:?}", entries)
 //! }
 //! ```
@@ -37,21 +36,24 @@ pub mod geosite;
 #[cfg(feature = "serde")]
 pub mod srs;
 
+mod interner;
+
 use std::{
-    cell::{Cell, RefCell},
-    cmp::Ordering,
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     fmt::Display,
-    hash::Hash,
-    marker::PhantomData,
-    mem,
     ops::Deref,
-    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
     str::Lines,
 };
 
 use cfg_if::cfg_if;
+
+use crate::interner::{
+    BasePool, InternId, InternIdHasher, PackedAttr, PoolGuard, intern, maybe_intern,
+};
+
+#[cfg(feature = "smallvec")]
+const SMALL_VEC_STACK_SIZE: usize = 4;
 
 cfg_if! {
     if #[cfg(feature = "ahash")] {
@@ -60,183 +62,6 @@ cfg_if! {
         use ::rustc_hash::FxBuildHasher as Hasher;
     } else {
         use ::std::collections::hash_map::RandomState as Hasher;
-    }
-}
-
-#[cfg(feature = "smallvec")]
-const SMALL_VEC_STACK_SIZE: usize = 4;
-
-struct Interner<T>
-where
-    T: Eq + Hash + ?Sized,
-{
-    set: Option<HashSet<Rc<T>, Hasher>>,
-}
-
-impl<T> Interner<T>
-where
-    T: Eq + Hash + ?Sized,
-{
-    fn new() -> Self {
-        Self { set: None }
-    }
-
-    fn initialize(&mut self) {
-        self.set = Some(HashSet::default())
-    }
-
-    fn intern(&mut self, s: Rc<T>) -> Rc<T> {
-        let set = self
-            .set
-            .as_mut()
-            .expect("intern pool not initialized; missing PoolGuard");
-        if let Some(v) = set.get(&s) {
-            v.clone()
-        } else {
-            set.insert(s.clone());
-            s
-        }
-    }
-
-    fn intern_ref(&self, value: &T) -> Option<Rc<T>> {
-        let set = self.set.as_ref()?;
-        set.get(value).cloned()
-    }
-
-    fn clear(&mut self) {
-        self.set = None;
-    }
-}
-
-// Discards DST metadata
-// saves some stack memory
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-struct InternId(usize);
-
-impl InternId {
-    /// # Safety
-    ///
-    /// MUST be Intern-ed by Interner
-    #[inline(always)]
-    unsafe fn from_interned<T: ?Sized>(value: Rc<T>) -> Self {
-        Self(Rc::as_ptr(&value).addr())
-    }
-}
-
-macro_rules! define_pool {
-    ($name:ident, $ty:ty) => {
-        ::paste::paste! {
-            thread_local! {
-                static [< $name:snake:upper _POOL >]: RefCell<Interner<$ty>> = RefCell::new(Interner::new());
-            }
-            struct [< $name Pool >];
-            impl [< $name Pool >] {
-                fn initialize() {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().initialize())
-                }
-                fn [< $name:snake >](value: Rc<$ty>) -> Rc<$ty> {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().intern(value))
-                }
-                fn [< $name:snake _ref >](value: &$ty) -> Option<Rc<$ty>> {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow().intern_ref(value))
-                }
-                fn clear() {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().clear())
-                }
-            }
-        }
-    };
-}
-
-define_pool!(Base, str);
-define_pool!(Attr, str);
-define_pool!(DomainValue, str);
-define_pool!(AttrSlice, [Rc<str>]);
-
-macro_rules! maybe_intern {
-    ($use_pool:expr, $s:expr, $name:ident) => {
-        if !$use_pool {
-            Rc::from($s)
-        } else {
-            intern!($s, $name)
-        }
-    };
-}
-
-macro_rules! intern {
-    ($s:expr, $name:ident) => {
-        ::paste::paste! {
-            crate::[<$name Pool>]::[<$name:snake _ref>]($s.as_ref())
-                .unwrap_or_else(|| [<$name Pool>]::[<$name:snake>](Rc::from($s)))
-        }
-    };
-}
-
-thread_local! {
-    static POOL_USED_COUNT: Cell<isize> = const { Cell::new(0) };
-}
-
-type NotSyncNorSend = PhantomData<Rc<()>>;
-
-#[derive(Debug)]
-struct PoolGuard {
-    _marker: NotSyncNorSend,
-}
-
-impl PoolGuard {
-    fn acquire() -> Self {
-        let n = POOL_USED_COUNT.get();
-        if n <= 0 {
-            POOL_USED_COUNT.set(1);
-            #[cfg(debug_assertions)]
-            if n < 0 {
-                dbg!("POOL_USED_COUNT underflow", n);
-            }
-            Self::clear_pools();
-            AttrPool::initialize();
-            BasePool::initialize();
-            DomainValuePool::initialize();
-            AttrSlicePool::initialize();
-        } else if n == isize::MAX {
-            panic!("Pool is poisoned due to previous panic in Drop");
-        } else {
-            POOL_USED_COUNT.set(n + 1);
-        }
-        Self {
-            _marker: NotSyncNorSend::default(),
-        }
-    }
-
-    fn clear_pools() {
-        AttrPool::clear();
-        BasePool::clear();
-        DomainValuePool::clear();
-        AttrSlicePool::clear();
-    }
-}
-
-impl Default for PoolGuard {
-    fn default() -> Self {
-        Self::acquire()
-    }
-}
-
-impl Drop for PoolGuard {
-    fn drop(&mut self) {
-        let n = POOL_USED_COUNT.get() - 1;
-        if n <= 0 {
-            POOL_USED_COUNT.set(0);
-            if catch_unwind(AssertUnwindSafe(Self::clear_pools)).is_err() {
-                POOL_USED_COUNT.set(isize::MAX);
-            };
-            #[cfg(debug_assertions)]
-            if n < 0 {
-                dbg!("POOL_USED_COUNT underflow", n);
-            }
-        } else {
-            POOL_USED_COUNT.set(n);
-        }
     }
 }
 
@@ -266,6 +91,7 @@ impl Display for DomainKind {
     }
 }
 
+/// The type of an [`Entry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Domain(DomainKind),
@@ -282,38 +108,11 @@ impl Display for Kind {
 }
 
 /// Single parsed entry
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Entry {
     pub kind: Kind,
-    pub base: Rc<str>,
     pub value: Rc<str>,
     pub attrs: Rc<[Rc<str>]>,
-}
-
-impl Ord for Entry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match (&self.kind, &other.kind) {
-            (Kind::Include, Kind::Include) => self
-                .value
-                .cmp(&other.value)
-                .then_with(|| self.base.cmp(&other.base))
-                .then_with(|| self.attrs.cmp(&other.attrs)),
-            (Kind::Include, _) => Ordering::Less,
-            (_, Kind::Include) => Ordering::Greater,
-
-            (Kind::Domain(a), Kind::Domain(b)) => a
-                .cmp(b)
-                .then_with(|| self.value.cmp(&other.value))
-                .then_with(|| self.base.cmp(&other.base))
-                .then_with(|| self.attrs.cmp(&other.attrs)),
-        }
-    }
-}
-
-impl PartialOrd for Entry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 /// A string slice that is guaranteed to be a single line.
@@ -335,7 +134,7 @@ impl<'a> OneLine<'a> {
         if s.find(['\n', '\r']).is_some() {
             None
         } else {
-            Some(Self { inner: s })
+            Some(unsafe { Self::new_unchecked(s) })
         }
     }
 
@@ -367,53 +166,32 @@ impl<'a> Display for OneLine<'a> {
     }
 }
 
-#[cfg(test)]
-mod one_line {
-    use crate::OneLine;
-
-    #[test]
-    fn test_accepts_normal_str() {
-        let s = "hello world";
-        let line = OneLine::new(s);
-
-        assert!(line.is_some());
-        assert_eq!(&*line.unwrap(), s);
-    }
-
-    #[test]
-    fn test_rejects_lf() {
-        let s = "hello\nworld";
-        assert!(OneLine::new(s).is_none());
-    }
-
-    #[test]
-    fn test_rejects_cr() {
-        let s = "hello\rworld";
-        assert!(OneLine::new(s).is_none());
-    }
-}
-
 cfg_if! {
     if #[cfg(feature = "smallvec")] {
         type AttrSlice = ::smallvec::SmallVec<[Rc<str>; SMALL_VEC_STACK_SIZE]>;
     } else {
-        type AttrSlice = Box<[Rc<str>]>;
+        type AttrSlice = ::std::boxed::Box<[Rc<str>]>;
     }
 }
 
 impl Entry {
-    pub fn parse_line(base: &str, line: OneLine) -> Option<Self> {
-        Self::parse_line_inner::<false>(base, line)
+    #[inline]
+    fn ptr_eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && Rc::ptr_eq(&self.value, &other.value)
+            && Rc::ptr_eq(&self.attrs, &other.attrs)
+    }
+
+    pub fn parse_line(line: OneLine) -> Option<Self> {
+        Self::parse_line_inner::<false>(line)
     }
 
     #[inline(always)]
-    fn parse_line_inner<const USE_POOL: bool>(base: &str, line: OneLine) -> Option<Self> {
+    fn parse_line_inner<const USE_POOL: bool>(line: OneLine) -> Option<Self> {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             return None;
         }
-
-        let base = maybe_intern!(USE_POOL, base, Base);
 
         let line = line.split_once('#').map(|(l, _)| l).unwrap_or(line).trim();
 
@@ -427,11 +205,15 @@ impl Entry {
             _ => unimplemented!("unknown domain kind prefix: {kind_str}"),
         };
 
-        let mut parts = value.split_whitespace();
+        let mut parts = value.split_ascii_whitespace();
 
-        let value = parts
-            .next()
-            .map(|s| maybe_intern!(USE_POOL, s, DomainValue))?;
+        let value = parts.next().map(|s| {
+            if matches!(kind, Kind::Include) {
+                maybe_intern!(USE_POOL, s, Base)
+            } else {
+                maybe_intern!(USE_POOL, s, DomainValue)
+            }
+        })?;
 
         let attrs: AttrSlice = parts
             .filter_map(|s| {
@@ -441,54 +223,38 @@ impl Entry {
             .collect();
         let attrs = maybe_intern!(USE_POOL, attrs.as_ref(), AttrSlice);
 
-        Some(Self {
-            kind,
-            base,
-            value,
-            attrs,
-        })
+        Some(Self { kind, value, attrs })
     }
 }
 
-#[test]
-fn test_parse_line_combinations() {
-    let _pg = PoolGuard::acquire();
-    let bases = ["google", "alphabet"];
-    let attr_combos: [&[&str]; _] = [&[], &["attr1"], &["attr1", "attr2"]];
+#[derive(Debug, Default)]
+struct BaseEntries {
+    normal: Vec<Entry>,
+    includes: Vec<Include>,
+    next_include: usize,
+}
 
-    let kinds = [
-        Kind::Domain(DomainKind::Suffix),
-        Kind::Domain(DomainKind::Full),
-        Kind::Domain(DomainKind::Keyword),
-        Kind::Domain(DomainKind::Regex),
-        Kind::Include,
-    ];
+/// An include directive discovered during parsing.
+///
+/// Instances of this type are returned by
+/// [`Entries::next_include`] and [`Entries::drain_includes`].
+#[derive(Debug, Clone)]
+pub struct Include {
+    target: Rc<str>,
+    attrs: AttrFilterSlice,
+}
 
-    for base in bases {
-        for attrs in attr_combos {
-            for kind in kinds {
-                let mut line = format!("{}:example.com", kind);
-                for attr in attrs.iter() {
-                    line.push_str(" @");
-                    line.push_str(attr);
-                }
-                let line = OneLine::new(&line).unwrap();
-
-                let entry = Entry::parse_line_inner::<true>(base, line);
-
-                let attrs: AttrSlice = attrs.iter().map(|s| intern!(*s, Attr)).collect();
-                let attrs = intern!(attrs.as_ref(), AttrSlice);
-
-                let expected_domain = Some(Entry {
-                    kind,
-                    base: intern!(base, Base),
-                    value: intern!("example.com", DomainValue),
-                    attrs,
-                });
-
-                assert_eq!(entry, expected_domain, "line: {}", line);
-            }
-        }
+impl Include {
+    /// Returns the target specified by this include directive.
+    ///
+    /// The returned string is the raw target specified by the input.
+    /// This library does not resolve or interpret it. Callers are
+    /// responsible for mapping it to the appropriate resource, such
+    /// as by joining it with a base path or performing an
+    /// application-specific lookup.
+    #[inline]
+    pub fn target(&self) -> &str {
+        &self.target
     }
 }
 
@@ -501,59 +267,165 @@ fn test_parse_line_combinations() {
 /// They are automatically cleared when the last [`Entries`] is dropped on the thread.
 #[derive(Debug, Default)]
 pub struct Entries {
-    entries: BTreeSet<Entry>,
-    parsed_id: BTreeSet<Rc<str>>,
+    bases: BTreeMap<Rc<str>, BaseEntries>,
+    parsed_id: HashSet<InternId, InternIdHasher>,
     _pg: PoolGuard,
 }
 
 impl Entries {
+    #[inline]
     pub fn parse(base: &str, content: Lines) -> Self {
         let mut ret = Self::default();
-        ret.parse_extend(base, base, content);
+        ret.parse_include(base, content);
         ret
     }
 
-    pub fn parse_extend(&mut self, current: &str, base: &str, content: Lines) {
-        let id = intern!(current, Base);
-        if self.parsed_id.contains(&id) {
-            return;
-        };
+    fn parse_extend_inner(&mut self, id: Rc<str>, content: Lines) {
+        let node = self.bases.entry(id).or_default();
+
         content
             .filter_map(|line| {
                 // Safety:
                 // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
-                Entry::parse_line_inner::<true>(base, unsafe { OneLine::new_unchecked(line) })
+                Entry::parse_line_inner::<true>(unsafe { OneLine::new_unchecked(line) })
             })
-            .for_each(|entry| {
-                self.entries.insert(entry);
-            });
-        self.parsed_id.insert(id);
+            .for_each(|entry| Self::extend_for_each(entry, node));
     }
 
-    /// Returns a deduplicated set of bases.
+    /// Parses and appends entries to the specified base.
+    ///
+    /// Unlike [`Entries::parse_include`], this function does not track whether
+    /// the base has already been parsed. Calling it multiple times with the same
+    /// base appends additional entries.
+    #[inline]
+    pub fn parse_extend(&mut self, current: &str, content: Lines) {
+        let id = intern!(current, Base);
+        self.parse_extend_inner(id, content);
+    }
+
+    /// Returns whether `candidate` has already been included.
+    ///
+    /// This is a performance helper only.
+    /// [`Entries::parse_include`] already avoids duplicate insertion, so
+    /// checking beforehand is unnecessary unless include parsing itself is
+    /// expensive (such as network-backed IO).
+    pub fn is_included(&self, candidate: &str) -> bool {
+        let Some(id) = BasePool::base_id(candidate) else {
+            return false;
+        };
+
+        self.parsed_id.contains(&id)
+    }
+
+    /// Parses and appends entries to the specified base if it has not already
+    /// been parsed.
+    ///
+    /// This function is intended for processing [`Include`] targets. Subsequent
+    /// calls with the same base are ignored.
+    #[inline]
+    pub fn parse_include(&mut self, current: &str, content: Lines) {
+        let id = intern!(current, Base);
+
+        if !self
+            .parsed_id
+            // Safety: This uses `intern!()` macro, it's guaranteed return a interned `Rc<T>`
+            .insert(unsafe { InternId::from_interned(&id) })
+        {
+            return;
+        };
+
+        self.parse_extend_inner(id, content);
+    }
+
+    fn extend_for_each(entry: Entry, node: &mut BaseEntries) {
+        if !matches!(entry.kind, Kind::Include) {
+            node.normal.push(entry);
+            return;
+        }
+
+        let map = |attr: &Rc<str>| {
+            if let Some(attr) = attr.strip_prefix('-') {
+                PackedAttr::new(
+                    // Safety: This uses `intern!()` macro, it's guaranteed return a interned `Rc<T>`
+                    unsafe { InternId::from_interned(&intern!(attr, Attr)) },
+                    false,
+                )
+            } else {
+                // Safety: `attr` is from `Entry::parse_line_inner::<true>`,
+                // which guarantees to use intern pool
+                PackedAttr::new(unsafe { InternId::from_interned(attr) }, true)
+            }
+        };
+
+        node.includes.push(Include {
+            target: entry.value,
+            attrs: entry.attrs.iter().map(map).collect(),
+        })
+    }
+
+    /// Returns an iterator over all bases.
     ///
     /// Bases are ordered by their [`Ord`] implementation.
     pub fn bases(&self) -> impl Iterator<Item = Rc<str>> + use<> {
-        let btree: BTreeSet<_> = self.entries.iter().map(|d| d.base.clone()).collect();
-        btree.into_iter()
+        let bases: Box<[_]> = self.bases.keys().cloned().collect();
+        bases.into_iter()
+    }
+
+    /// Removes the specified base, including all entries and includes.
+    ///
+    /// Returns `true` if the base existed.
+    #[inline]
+    pub fn remove_base<S: AsRef<str>>(&mut self, base: S) -> bool {
+        self.bases.remove(base.as_ref()).is_some()
+    }
+
+    fn pop_helper<F>(&mut self, mut cmp: F) -> bool
+    where
+        F: FnMut(&Entry) -> bool,
+    {
+        for node in self.bases.values_mut() {
+            if let Some(pos) = node.normal.iter().position(&mut cmp) {
+                node.normal.swap_remove(pos);
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Removes a [`Entry`] from the list.
+    #[inline]
     pub fn pop(&mut self, entry: &Entry) -> bool {
-        self.entries.remove(entry)
+        self.pop_helper(|e| e == entry)
+    }
+
+    /// Equivalent to [`Entries::pop`], but compares entries using
+    /// [`Rc::ptr_eq`] where applicable.
+    #[inline]
+    pub fn pop_ptr_eq(&mut self, entry: &Entry) -> bool {
+        self.pop_helper(|e| e.ptr_eq(entry))
     }
 
     /// Take and returns the inner [`Vec<Entry>`][Entry]
     pub fn take(&mut self) -> Vec<Entry> {
-        mem::take(&mut self.entries).into_iter().collect()
+        let mut out = Vec::new();
+
+        for base in self.bases.values_mut() {
+            out.append(&mut base.normal);
+        }
+
+        out
     }
 
     /// Returns a snapshot iterator of current includes.
     ///
     /// Note:
     /// This iterator is **not live**. Newly added includes (e.g. via
-    /// `parse_extend`) will **not** appear in the iterator returned by
+    /// [`parse_include`][Self::parse_include]) will **not** appear in the iterator returned by
     /// this call.
+    ///
+    /// Calling this method advances the internal include cursor to the end, so
+    /// all currently pending includes are considered visited.
     ///
     /// To process includes incrementally, call [`Entries::drain_includes`] repeatedly.
     /// # Example:
@@ -563,27 +435,43 @@ impl Entries {
     /// # const BASE: &str = "";
     /// # let mut entries = Entries::parse(BASE, "".lines());
     /// while let Some(i) = entries.drain_includes().next() {
-    ///     let include = fs::read_to_string(i.base.as_ref()).unwrap();
-    ///     entries.parse_extend(i.base.as_ref(), BASE, include.lines());
+    ///     if entries.is_included(i.target()) {
+    ///         continue;
+    ///     }
+    ///     let include = fs::read_to_string(i.target()).unwrap();
+    ///     entries.parse_include(i.target(), include.lines());
     /// }
     /// ```
-    pub fn drain_includes(&mut self) -> impl Iterator<Item = Entry> + use<> {
-        let entries = mem::take(&mut self.entries);
-        let (includes, others) = entries
-            .into_iter()
-            .partition(|e| matches!(e.kind, Kind::Include));
-        self.entries = others;
-        includes.into_iter()
+    pub fn drain_includes(&mut self) -> impl Iterator<Item = Include> + use<> {
+        let drain: Box<[_]> = self
+            .bases
+            .values_mut()
+            .flat_map(|node| {
+                let start = node.next_include;
+                node.next_include = node.includes.len();
+                node.includes[start..].iter().cloned()
+            })
+            .collect();
+        drain.into_iter()
     }
 
-    /// Returns and consume one include
-    pub fn next_include(&mut self) -> Option<Entry> {
-        let entry = self
-            .entries
-            .range(..)
-            .find(|e| matches!(e.kind, Kind::Include))
-            .cloned()?;
-        self.entries.remove(&entry).then_some(entry)
+    /// Returns the next pending include, advancing the internal include cursor.
+    ///
+    /// Returns [`None`] if no unvisited includes remain.
+    pub fn next_include(&mut self) -> Option<Include> {
+        for node in self.bases.values_mut() {
+            if let Some(include) = node.includes.get(node.next_include).cloned() {
+                node.next_include += 1;
+                return Some(include);
+            }
+        }
+
+        None
+    }
+
+    #[inline]
+    fn cap(&self) -> usize {
+        self.bases.values().map(|b| b.normal.len()).sum()
     }
 
     /// Flatten domains by `base` with optional attribute filters,
@@ -600,11 +488,8 @@ impl Entries {
     ///   Selects domains with a matching `base` that satisfy **all** filters:
     ///   - [`AttrFilter::Has`]: **At least one** of `candidate.attrs` matches the filter value.
     ///   - [`AttrFilter::Lacks`]: **No** `candidate.attrs` matches the filter value.
-    ///     This effectively **overrides** any [`AttrFilter::Has`] matches for the same attribute.
-    ///
-    /// ### Performance
-    /// Unlike [`flatten_drain`][Self::flatten_drain], this method retains the original domains
-    /// by cloning each selected [`Domain`], which incurs some additional allocation overhead.
+    ///   - [`AttrFilter::Has`] and [`AttrFilter::Lacks`] must NOT appear together for the same key.
+    ///     If they do, the filter set is considered invalid and matches nothing.
     ///
     ///
     /// Returns [`None`] if no domains are selected (i.e., the result is empty),
@@ -614,32 +499,11 @@ impl Entries {
         base: &str,
         attr_filters: Option<&[AttrFilter]>,
     ) -> Option<FlatDomains> {
-        self.flatten_inner::<false>(base, attr_filters)
-    }
-
-    /// Similar to [`flatten`][Self::flatten], but **drains** selected domains from `self.domains`.
-    ///
-    /// Only non-selected domains are retained in the original collection. This is generally more
-    /// efficient than [`flatten`][Self::flatten] as it moves out domains instead of cloning them.
-    pub fn flatten_drain(
-        &mut self,
-        base: &str,
-        attr_filters: Option<&[AttrFilter]>,
-    ) -> Option<FlatDomains> {
-        self.flatten_inner::<true>(base, attr_filters)
-    }
-
-    #[inline(always)]
-    fn flatten_inner<const DRAIN: bool>(
-        &mut self,
-        base: &str,
-        attr_filters: Option<&[AttrFilter]>,
-    ) -> Option<FlatDomains> {
-        if self.entries.is_empty() {
+        if self.bases.is_empty() {
             return None;
         }
-        let mut flattened = Vec::with_capacity(self.entries.len());
         let base = BasePool::base_ref(base)?;
+
         // Convert `AttrFilter` into an internal `Rc` version for fast lookup.
         // After intern lookup, comparisons in flatten/filter use `Rc::ptr_eq`
         // instead of string-by-string comparison, which significantly improves
@@ -648,95 +512,174 @@ impl Entries {
         // Note: If a caller provides an attribute not already in the AttrPool,
         // it will be interned on-the-fly, incurring a one-time interning cost
         // for that specific filter.
-        let attr_filters: Option<AttrFilterSlice> = attr_filters.map(|afs| {
-            afs.iter()
-                .map(|f| match f {
-                    AttrFilter::Has(s) => {
-                        PackedAttr::new(unsafe { InternId::from_interned(intern!(*s, Attr)) }, true)
-                    }
-                    AttrFilter::Lacks(s) => PackedAttr::new(
-                        unsafe { InternId::from_interned(intern!(*s, Attr)) },
-                        false,
-                    ),
-                })
-                .collect()
-        });
+        let afs_map = |f: &AttrFilter| match f {
+            AttrFilter::Has(s) => {
+                // Safety: This uses `intern!()` macro, it's guaranteed return a interned `Rc<T>`
+                PackedAttr::new(unsafe { InternId::from_interned(&intern!(*s, Attr)) }, true)
+            }
+            AttrFilter::Lacks(s) => PackedAttr::new(
+                // Safety: This uses `intern!()` macro, it's guaranteed return a interned `Rc<T>`
+                unsafe { InternId::from_interned(&intern!(*s, Attr)) },
+                false,
+            ),
+        };
 
-        if DRAIN {
-            flatten::drain_matches(
-                &mut self.entries,
-                base,
-                attr_filters.as_deref(),
-                &mut flattened,
-            )
-        } else {
-            flatten::retain_all(&self.entries, base, attr_filters.as_deref(), &mut flattened)
-        }
+        let attr_filters: Option<AttrFilterSlice> =
+            attr_filters.map(|afs| afs.iter().map(afs_map).collect());
+
+        let mut visited = Vec::with_capacity(8);
+
+        let mut flattened = Vec::with_capacity(self.cap());
+
+        self.flatten_recursive(base.clone(), &mut visited, &mut flattened);
+
+        flattened
+            .retain(|entry| flatten::filter_matches_all(&entry.attrs, attr_filters.as_deref()));
+
+        flattened.sort_unstable_by(flatten::sort);
+        flattened.dedup_by(flatten::dedup);
+
+        flatten::polish(&mut flattened);
 
         if flattened.is_empty() {
             return None;
         };
 
-        Some(FlatDomains { inner: flattened })
+        Some(FlatDomains {
+            base,
+            inner: flattened,
+        })
+    }
+
+    fn flatten_recursive(
+        &self,
+        base: Rc<str>,
+        visited: &mut Vec<InternId>,
+        flattened: &mut Vec<Entry>,
+    ) {
+        // Safety: base is from `BasePool::base_ref()?` at `Self::flatten()`
+        let intern_id = unsafe { InternId::from_interned(&base) };
+
+        if visited.contains(&intern_id) {
+            return;
+        }
+        visited.push(intern_id);
+
+        let Some(node) = self.bases.get(&base) else {
+            visited.pop();
+            return;
+        };
+
+        for entry in &node.normal {
+            flattened.push(entry.clone());
+        }
+
+        for include in &node.includes {
+            let begin = flattened.len();
+
+            self.flatten_recursive(include.target.clone(), visited, flattened);
+
+            flattened
+                .extract_if(begin.., |entry| {
+                    !include
+                        .attrs
+                        .iter()
+                        .all(|attr| flatten::filter_matches(&entry.attrs, attr))
+                })
+                .for_each(drop);
+        }
+
+        visited.pop();
     }
 }
 
 mod flatten {
-    use std::{collections::BTreeSet, rc::Rc};
+    use std::{cmp::Ordering, rc::Rc};
 
-    use crate::{Entry, Kind, PackedAttr};
+    use super::*;
 
     #[inline]
-    fn should_select(
-        candidate: &Entry,
-        base: &Rc<str>,
+    pub(crate) fn sort(a: &Entry, b: &Entry) -> Ordering {
+        a.kind
+            .cmp(&b.kind)
+            .reverse()
+            .then_with(|| a.value.cmp(&b.value))
+    }
+
+    #[inline]
+    pub(crate) fn dedup(a: &mut Entry, b: &mut Entry) -> bool {
+        a.ptr_eq(b)
+    }
+
+    #[inline]
+    pub(crate) fn filter_matches_all(
+        candidate: &[Rc<str>],
         attr_filters: Option<&[PackedAttr]>,
     ) -> bool {
-        if matches!(candidate.kind, Kind::Include) || !Rc::ptr_eq(base, &candidate.base) {
-            return false;
-        }
-
-        match &attr_filters {
+        match attr_filters {
             None => true,
-            Some([]) => candidate.attrs.is_empty(),
-            Some(attr_filters) => attr_filters.iter().all(|packed_attr| {
-                if packed_attr.tag() {
-                    candidate
-                        .attrs
-                        .iter()
-                        .any(|attr| attr.as_ptr() as usize == packed_attr.addr())
-                } else {
-                    candidate
-                        .attrs
-                        .iter()
-                        .all(|attr| attr.as_ptr() as usize != packed_attr.addr())
-                }
-            }),
+
+            Some([]) => candidate.is_empty(),
+
+            Some(attr_filters) => attr_filters
+                .iter()
+                .all(|packed_attr| filter_matches(candidate, packed_attr)),
         }
     }
 
-    pub(crate) fn retain_all(
-        domains: &BTreeSet<Entry>,
-        base: Rc<str>,
-        attr_filters: Option<&[PackedAttr]>,
-        flattened: &mut Vec<Entry>,
-    ) {
-        domains.iter().for_each(|candidate| {
-            if should_select(candidate, &base, attr_filters) {
-                flattened.push(candidate.clone());
+    #[inline]
+    pub(crate) fn filter_matches(candidate: &[Rc<str>], packed_attr: &PackedAttr) -> bool {
+        if packed_attr.tag() {
+            candidate
+                .iter()
+                .any(|attr| attr.as_ptr().addr() == packed_attr.addr())
+        } else {
+            candidate
+                .iter()
+                .all(|attr| attr.as_ptr().addr() != packed_attr.addr())
+        }
+    }
+
+    pub(crate) fn polish(entries: &mut Vec<Entry>) {
+        let mut domains: HashSet<Rc<str>, Hasher> = HashSet::default();
+
+        domains.reserve(entries.len());
+
+        for entry in entries.iter() {
+            if matches!(entry.kind, Kind::Domain(DomainKind::Suffix)) {
+                domains.insert(entry.value.clone());
             }
+        }
+        entries.retain(|entry| match entry.kind {
+            Kind::Domain(DomainKind::Regex) | Kind::Domain(DomainKind::Keyword) => true,
+
+            Kind::Domain(DomainKind::Suffix) | Kind::Domain(DomainKind::Full) => {
+                if !entry.attrs.is_empty() {
+                    return true;
+                }
+
+                is_not_redundant(entry, &domains)
+            }
+
+            Kind::Include => unreachable!(),
         });
     }
 
-    pub(crate) fn drain_matches(
-        domains: &mut BTreeSet<Entry>,
-        base: Rc<str>,
-        attr_filters: Option<&[PackedAttr]>,
-        flattened: &mut Vec<Entry>,
-    ) {
-        flattened.extend(domains.extract_if(.., |candidate| {
-            should_select(candidate, &base, attr_filters)
-        }));
+    fn is_not_redundant(entry: &Entry, domains: &HashSet<Rc<str>, Hasher>) -> bool {
+        let mut domain: &str = &entry.value;
+
+        if matches!(entry.kind, Kind::Domain(DomainKind::Full)) && domains.contains(domain) {
+            return false;
+        }
+
+        while let Some((_, rest)) = domain.split_once('.') {
+            domain = rest;
+            if domains.contains(domain) {
+                return false;
+            }
+        }
+
+        true
     }
 }
 
@@ -750,105 +693,71 @@ cfg_if! {
     if #[cfg(feature = "smallvec")] {
         type AttrFilterSlice = ::smallvec::SmallVec<[PackedAttr; SMALL_VEC_STACK_SIZE]>;
     } else {
-        type AttrFilterSlice = Box<[PackedAttr]>;
+        type AttrFilterSlice = ::std::boxed::Box<[PackedAttr]>;
     }
-}
-
-#[repr(transparent)]
-struct PackedAttr {
-    inner: usize,
-}
-
-impl PackedAttr {
-    const TAG_MASK: usize = 0x1;
-    const ADDR_MASK: usize = !Self::TAG_MASK;
-
-    #[inline(always)]
-    pub const fn new(attr_id: InternId, tag: bool) -> Self {
-        let InternId(ptr_addr) = attr_id;
-        assert!(ptr_addr.is_multiple_of(2));
-        Self {
-            inner: ptr_addr | tag as usize,
-        }
-    }
-
-    #[inline(always)]
-    pub const fn addr(&self) -> usize {
-        self.inner & Self::ADDR_MASK
-    }
-
-    #[inline(always)]
-    pub const fn tag(&self) -> bool {
-        (self.inner & Self::TAG_MASK) != 0
-    }
-}
-
-#[test]
-fn test_packed_attr_logic() {
-    let original_addr = 0x12345670_usize;
-    let attr_id = InternId(original_addr);
-
-    let packed_true = PackedAttr::new(attr_id, true);
-    assert!(packed_true.tag());
-    assert_eq!(packed_true.addr(), original_addr,);
-    assert_eq!(packed_true.inner, original_addr | 1);
-
-    let packed_false = PackedAttr::new(attr_id, false);
-    assert!(!packed_false.tag());
-    assert_eq!(packed_false.addr(), original_addr,);
-    assert_eq!(packed_false.inner, original_addr);
-}
-
-#[test]
-fn test_with_real_pointer() {
-    let val = Box::new(42);
-    let ptr_addr = &*val as *const i32 as usize;
-
-    assert_eq!(ptr_addr & 0x1, 0,);
-
-    let attr_id = InternId(ptr_addr);
-
-    let p1 = PackedAttr::new(attr_id, true);
-    let p2 = PackedAttr::new(attr_id, false);
-
-    assert!(p1.tag());
-    assert!(!p2.tag());
-    assert_eq!(p1.addr(), ptr_addr);
-    assert_eq!(p2.addr(), ptr_addr);
-}
-
-#[test]
-fn test_const_capability() {
-    const ADDR: InternId = InternId(0x1000);
-    const PACKED: PackedAttr = PackedAttr::new(ADDR, true);
-
-    const { assert!(PACKED.tag()) };
-    assert_eq!(PACKED.addr(), 0x1000);
-}
-
-#[cfg(test)]
-const BASE: &str = "base";
-
-#[test]
-fn test_pop_domain() {
-    let mut entries = Entries::parse(BASE, "example.com".lines());
-    let entry = entries.entries.first().unwrap().clone();
-    assert!(entries.pop(&entry));
 }
 
 /// Domain entries flattened by [`Entries::flatten`]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FlatDomains {
+    base: Rc<str>,
     inner: Vec<Entry>,
 }
 
 impl FlatDomains {
-    /// Consumes [`self`] and returns the underlying [`Vec<Domain>`][Domain].
+    #[inline]
+    fn new_inner<I, F>(base: &str, iter: I, cmp: F) -> Self
+    where
+        I: IntoIterator<Item = Entry>,
+        F: FnMut(&mut Entry, &mut Entry) -> bool,
+    {
+        let base = Rc::from(base);
+        let mut entries: Vec<_> = iter.into_iter().collect();
+        entries.retain(|e| matches!(e.kind, Kind::Domain(_)));
+        entries.sort_by(flatten::sort);
+        entries.dedup_by(cmp);
+        Self {
+            base,
+            inner: entries,
+        }
+    }
+
+    /// Creates a [`FlatDomains`] from an iterator of [`Entry`].
+    ///
+    /// Entries are compared by value rather than interned identity,
+    /// allowing equivalent entries from different interning contexts
+    /// to deduplicate correctly.
+    pub fn new<I>(base: &str, iter: I) -> Self
+    where
+        I: IntoIterator<Item = Entry>,
+    {
+        Self::new_inner(base, iter, |a, b| a == b)
+    }
+
+    /// Equivalent to [`FlatDomains::new`], but compares entries using
+    /// [`Rc::ptr_eq`] where applicable.
+    pub fn new_ptr_eq<I>(base: &str, iter: I) -> Self
+    where
+        I: IntoIterator<Item = Entry>,
+    {
+        Self::new_inner(base, iter, |a, b| a.ptr_eq(b))
+    }
+
+    /// Returns the target base of this flattened result.
+    ///
+    /// This is the base passed to [`Entries::flatten`], not necessarily the
+    /// original base of every contained [`Entry`].
+    #[inline]
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// Consumes [`self`] and returns the underlying [`Vec<Entry>`][Entry].
     pub fn into_vec(self) -> Vec<Entry> {
         self.inner
     }
 
-    /// inner [`Vec<Domain>`][Domain] will be [`Vec::split_off`]
+    /// inner [`Vec<Entry>`][Entry] will be [`Vec::split_off`]
     /// at the next kind index to reduce allocations.
     ///
     /// At most one call per [`DomainKind`] variant (maximum 4 calls).
@@ -860,107 +769,314 @@ impl FlatDomains {
     }
 }
 
-#[test]
-fn test_flatten_domains() {
-    let content = "\
+#[cfg(test)]
+const BASE: &str = "base";
+
+#[cfg(test)]
+mod sort_predictable;
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use super::*;
+
+    #[test]
+    fn accepts_normal_str() {
+        let s = "hello world";
+        let line = OneLine::new(s);
+
+        assert!(line.is_some());
+        assert_eq!(&*line.unwrap(), s);
+    }
+
+    #[test]
+    fn rejects_lf() {
+        let s = "hello\nworld";
+        assert!(OneLine::new(s).is_none());
+    }
+
+    #[test]
+    fn rejects_cr() {
+        let s = "hello\rworld";
+        assert!(OneLine::new(s).is_none());
+    }
+
+    #[test]
+    fn parse_line_combinations() {
+        let _pg = PoolGuard::acquire();
+        let attr_combos: [&[&str]; _] = [&[], &["attr1"], &["attr1", "attr2"]];
+
+        let kinds = [
+            Kind::Domain(DomainKind::Suffix),
+            Kind::Domain(DomainKind::Full),
+            Kind::Domain(DomainKind::Keyword),
+            Kind::Domain(DomainKind::Regex),
+            Kind::Include,
+        ];
+
+        for attrs in attr_combos {
+            for kind in kinds {
+                let mut line = format!("{}:example.com", kind);
+                for attr in attrs.iter() {
+                    line.push_str(" @");
+                    line.push_str(attr);
+                }
+                let line = OneLine::new(&line).unwrap();
+
+                let entry = Entry::parse_line_inner::<true>(line);
+
+                let attrs: AttrSlice = attrs.iter().map(|s| intern!(*s, Attr)).collect();
+                let attrs = intern!(attrs.as_ref(), AttrSlice);
+
+                let expected_domain = Some(Entry {
+                    kind,
+                    value: intern!("example.com", DomainValue),
+                    attrs,
+                });
+
+                assert_eq!(entry, expected_domain, "line: {}", line);
+            }
+        }
+    }
+
+    #[test]
+    fn entries_take() {
+        let mut entries = Entries::parse(
+            BASE,
+            "\
+        include:something # includes won't be taken
+        example.com
+        "
+            .lines(),
+        );
+
+        let taken = entries.take();
+
+        assert_eq!(taken.len(), 1);
+
+        // include remains
+        assert_eq!(entries.drain_includes().size_hint(), (1, Some(1)))
+    }
+
+    #[test]
+    fn pop_domain() {
+        let mut entries = Entries::parse(BASE, "example.com".lines());
+        let entry = &Entries::parse(BASE, "example.com".lines()).take()[0];
+        assert!(entries.pop(entry));
+    }
+
+    #[test]
+    fn flatten_domains() {
+        let content = "\
             domain:example.com
-            full:full.example.com
+            full:example.com       # will be polished out
+            full:full.example.com  # will be polished out
             keyword:keyword
+            full:full.com
+            domain:domain.full.com # will stay
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines());
+        let mut entries = Entries::parse(BASE, content.lines());
 
-    let flat = entries.flatten_drain(BASE, None).unwrap();
+        let flat = entries.flatten(BASE, None).unwrap();
+        let flat_domains = flat.into_vec();
 
-    assert!(entries.entries.is_empty());
+        // len
+        assert_eq!(flat_domains.len(), 4);
 
-    let flat_domains = flat.into_vec();
-    assert_eq!(flat_domains.len(), 3);
-    assert!(
-        flat_domains
-            .iter()
-            .any(|d| d.kind == Kind::Domain(DomainKind::Suffix))
-    );
-    assert!(
-        flat_domains
-            .iter()
-            .any(|d| d.kind == Kind::Domain(DomainKind::Full))
-    );
-    assert!(
-        flat_domains
-            .iter()
-            .any(|d| d.kind == Kind::Domain(DomainKind::Keyword))
-    );
-}
+        // reversed kind ord
+        assert_matches!(flat_domains[0].kind, Kind::Domain(DomainKind::Keyword));
+        assert_matches!(flat_domains[1].kind, Kind::Domain(DomainKind::Full));
+        assert_matches!(flat_domains[2].kind, Kind::Domain(DomainKind::Suffix));
+        assert_matches!(flat_domains[3].kind, Kind::Domain(DomainKind::Suffix));
 
-#[test]
-fn test_flatten_domains_take_next() {
-    let content = "\
+        // lexicographic order
+        assert_eq!(&*flat_domains[2].value, "domain.full.com");
+        assert_eq!(&*flat_domains[3].value, "example.com");
+    }
+
+    #[test]
+    fn flatten_domains_take_next() {
+        let content = "\
             domain:domain
             full:full
             keyword:keyword
             regexp:regexp
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines());
+        let mut entries = Entries::parse(BASE, content.lines());
 
-    let mut flat = entries.flatten_drain(BASE, None).unwrap();
+        let mut flat = entries.flatten(BASE, None).unwrap();
 
-    assert!(entries.entries.is_empty());
+        let kinds = [
+            DomainKind::Suffix,
+            DomainKind::Full,
+            DomainKind::Keyword,
+            DomainKind::Regex,
+        ];
 
-    let mut i = 0;
-    while flat.take_next().is_some() {
-        i += 1;
+        let mut i = 0;
+
+        while let Some(e) = flat.take_next() {
+            assert_eq!(e.len(), 1);
+            assert_eq!(e[0].kind, Kind::Domain(kinds[i]));
+            i += 1;
+        }
+
+        assert_eq!(i, 4);
     }
-    assert_eq!(i, 4);
-}
 
-#[test]
-fn test_dedup() {
-    let content = "\
+    #[test]
+    fn dedup() {
+        let content = "\
             keyword:keyword
             keyword:keyword # dedup
+            full:full
+            full:full @attr1 # no dedup
         ";
 
-    let mut entries = Entries::parse(BASE, content.lines());
+        let mut entries = Entries::parse(BASE, content.lines());
 
-    let flat = entries.flatten_drain(BASE, None).unwrap().into_vec();
+        let flat = entries.flatten(BASE, None).unwrap().into_vec();
 
-    assert!(entries.entries.is_empty());
+        assert_eq!(flat.len(), 3);
 
-    assert_eq!(flat[0].kind, Kind::Domain(DomainKind::Keyword));
-}
+        assert_matches!(flat[0].kind, Kind::Domain(DomainKind::Keyword));
+        assert_matches!(flat[1].kind, Kind::Domain(DomainKind::Full));
+        assert_matches!(flat[2].kind, Kind::Domain(DomainKind::Full));
 
-#[cfg(test)]
-mod sort_predictable {
-    use std::array;
+        assert_eq!(&*flat[1].value, "full");
+        assert_eq!(flat[1].value, flat[2].value);
 
-    use crate::{BASE, Entries, FlatDomains};
+        assert_ne!(flat[1].attrs, flat[2].attrs);
+        assert_eq!(&*flat[2].attrs, ["attr1".into()]);
+    }
 
-    const VARIANT_LEN: usize = 6;
-    const CONTENS: [&str; VARIANT_LEN] = [
-        "full:full\nkeyword:keyword\nregexp:regexp",
-        "full:full\nregexp:regexp\nkeyword:keyword",
-        "keyword:keyword\nfull:full\nregexp:regexp",
-        "keyword:keyword\nregexp:regexp\nfull:full",
-        "regexp:regexp\nfull:full\nkeyword:keyword",
-        "regexp:regexp\nkeyword:keyword\nfull:full",
-    ];
+    #[test]
+    fn flat_from_iter() {
+        let flat = FlatDomains::new(
+            BASE,
+            [
+                parse_helper("keyword:b"),
+                parse_helper("include:ignored"),
+                parse_helper("keyword:a"),
+                parse_helper("keyword:a"), // dedup
+            ],
+        )
+        .into_vec();
 
-    pub(crate) fn test<T, K, F, C>(mut build: F, mut cmp: C)
-    where
-        K: Ord,
-        F: FnMut(FlatDomains) -> T,
-        C: FnMut(&T) -> K,
-    {
-        let list: [T; VARIANT_LEN] = array::from_fn(|i| {
-            let domains = Entries::parse(BASE, CONTENS[i].lines())
-                .flatten_drain(BASE, None)
-                .unwrap();
+        assert_eq!(flat.len(), 2);
+        assert_eq!(&*flat[0].value, "a");
+        assert_eq!(&*flat[1].value, "b");
+    }
 
-            build(domains)
-        });
+    fn attr_test_helper(content: &[&str], expected: Entry) {
+        const BASE: &str = "content_1";
 
-        assert!(list.windows(2).all(|w| cmp(&w[0]) == cmp(&w[1])));
+        let mut entries = Entries::parse(BASE, content[0].lines());
+
+        let mut next = 1;
+
+        while let Some(i) = entries.next_include() {
+            entries.parse_include(i.target(), content[next].lines());
+            next += 1;
+        }
+
+        let flat = entries.flatten(BASE, None).unwrap().into_vec();
+
+        assert_eq!(flat.len(), 1);
+
+        assert_eq!(flat[0], expected);
+    }
+
+    #[test]
+    fn attr_recursive() {
+        let content = &[
+            "\
+            include:content_2 @attr1
+        ",
+            "\
+            include:content_3
+        ",
+            "\
+            content_3 @attr1
+            ignored
+        ",
+        ];
+
+        attr_test_helper(
+            content,
+            Entry {
+                kind: Kind::Domain(DomainKind::Suffix),
+                value: "content_3".into(),
+                attrs: ["attr1".into()].into(),
+            },
+        )
+    }
+
+    #[test]
+    fn negative_attr() {
+        let content = &[
+            "\
+                include:content_2 @-attr2
+        ",
+            "\
+            content_2 @attr1
+            ignored @attr2
+        ",
+        ];
+
+        attr_test_helper(
+            content,
+            Entry {
+                kind: Kind::Domain(DomainKind::Suffix),
+                value: "content_2".into(),
+                attrs: ["attr1".into()].into(),
+            },
+        );
+    }
+
+    fn parse_helper(s: &str) -> Entry {
+        Entry::parse_line(OneLine::new(s).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn entry_to_flat() {
+        // random order, sort
+        let entries = [
+            parse_helper("regexp:entry_4"),
+            parse_helper("entry_1"),
+            parse_helper("keyword:entry_3"),
+            parse_helper("full:entry_2"),
+            parse_helper("full:entry_2"), // dedup
+        ];
+
+        let mut flat = FlatDomains::new(BASE, entries);
+
+        assert_eq!(flat.inner.len(), 4);
+
+        assert_eq!(flat.take_next().unwrap()[0], parse_helper("entry_1"));
+        assert_eq!(flat.take_next().unwrap()[0], parse_helper("full:entry_2"));
+        assert_eq!(
+            flat.take_next().unwrap()[0],
+            parse_helper("keyword:entry_3")
+        );
+        assert_eq!(flat.take_next().unwrap()[0], parse_helper("regexp:entry_4"));
+    }
+
+    #[test]
+    fn intern_id_hasher() {
+        use std::{
+            assert_matches,
+            panic::{AssertUnwindSafe, catch_unwind},
+        };
+
+        let mut h: HashSet<usize, InternIdHasher> = HashSet::default();
+        h.insert(1);
+        h.insert(2);
+
+        let mut h: HashSet<u8, InternIdHasher> = HashSet::default();
+        assert_matches!(catch_unwind(AssertUnwindSafe(|| h.insert(1))), Err(_));
     }
 }
