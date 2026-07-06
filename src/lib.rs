@@ -39,7 +39,7 @@ pub mod srs;
 mod interner;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     fmt::Display,
     ops::Deref,
     rc::Rc,
@@ -232,6 +232,7 @@ struct BaseEntries {
     normal: Vec<Entry>,
     includes: Vec<Include>,
     next_include: usize,
+    queued: bool,
 }
 
 /// An include directive discovered during parsing.
@@ -269,6 +270,7 @@ impl Include {
 pub struct Entries {
     bases: BTreeMap<Rc<str>, BaseEntries>,
     parsed_id: HashSet<InternId, InternIdHasher>,
+    include_queue: VecDeque<Rc<str>>,
     _pg: PoolGuard,
 }
 
@@ -281,7 +283,7 @@ impl Entries {
     }
 
     fn parse_extend_inner(&mut self, id: Rc<str>, content: Lines) {
-        let node = self.bases.entry(id).or_default();
+        let node = self.bases.entry(id.clone()).or_default();
 
         content
             .filter_map(|line| {
@@ -289,7 +291,7 @@ impl Entries {
                 // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
                 Entry::parse_line_inner::<true>(unsafe { OneLine::new_unchecked(line) })
             })
-            .for_each(|entry| Self::extend_for_each(entry, node));
+            .for_each(|entry| Self::extend_for_each(entry, node, &id, &mut self.include_queue));
     }
 
     /// Parses and appends entries to the specified base.
@@ -337,8 +339,13 @@ impl Entries {
         self.parse_extend_inner(id, content);
     }
 
-    fn extend_for_each(entry: Entry, node: &mut BaseEntries) {
-        if !matches!(entry.kind, Kind::Include) {
+    fn extend_for_each(
+        entry: Entry,
+        node: &mut BaseEntries,
+        id: &Rc<str>,
+        include_queue: &mut VecDeque<Rc<str>>,
+    ) {
+        if matches!(entry.kind, Kind::Domain(_)) {
             node.normal.push(entry);
             return;
         }
@@ -360,7 +367,12 @@ impl Entries {
         node.includes.push(Include {
             target: entry.value,
             attrs: entry.attrs.iter().map(map).collect(),
-        })
+        });
+
+        if !node.queued {
+            node.queued = true;
+            include_queue.push_back(id.clone());
+        }
     }
 
     /// Returns an iterator over all bases.
@@ -369,6 +381,12 @@ impl Entries {
     pub fn bases(&self) -> impl Iterator<Item = Rc<str>> + use<> {
         let bases: Box<[_]> = self.bases.keys().cloned().collect();
         bases.into_iter()
+    }
+
+    /// Returns `true` if the specified base exists.
+    #[inline]
+    pub fn contains_base<S: AsRef<str>>(&self, base: S) -> bool {
+        self.bases.contains_key(base.as_ref())
     }
 
     /// Removes the specified base, including all entries and includes.
@@ -429,27 +447,41 @@ impl Entries {
     ///
     /// To process includes incrementally, call [`Entries::drain_includes`] repeatedly.
     pub fn drain_includes(&mut self) -> impl Iterator<Item = Include> + use<> {
-        let drain: Box<[_]> = self
-            .bases
-            .values_mut()
-            .flat_map(|node| {
-                let start = node.next_include;
-                node.next_include = node.includes.len();
-                node.includes[start..].iter().cloned()
-            })
-            .collect();
-        drain.into_iter()
+        let mut out = Vec::new();
+
+        while let Some(id) = self.include_queue.pop_front() {
+            let Some(node) = self.bases.get_mut(&id) else {
+                continue;
+            };
+
+            out.extend(node.includes[node.next_include..].iter().cloned());
+
+            node.next_include = node.includes.len();
+            node.queued = false;
+        }
+
+        out.into_iter()
     }
 
     /// Returns the next pending include, advancing the internal include cursor.
     ///
     /// Returns [`None`] if no unvisited includes remain.
     pub fn next_include(&mut self) -> Option<Include> {
-        for node in self.bases.values_mut() {
-            if let Some(include) = node.includes.get(node.next_include).cloned() {
-                node.next_include += 1;
-                return Some(include);
+        while let Some(id) = self.include_queue.pop_front() {
+            let Some(node) = self.bases.get_mut(&id) else {
+                continue;
+            };
+
+            let include = node.includes[node.next_include].clone();
+            node.next_include += 1;
+
+            if node.next_include == node.includes.len() {
+                node.queued = false;
+            } else {
+                self.include_queue.push_back(id);
             }
+
+            return Some(include);
         }
 
         None
@@ -1049,5 +1081,55 @@ mod tests {
             parse_helper("keyword:entry_3")
         );
         assert_eq!(flat.take_next().unwrap()[0], parse_helper("regexp:entry_4"));
+    }
+
+    #[test]
+    fn base_operation() {
+        let mut entries = Entries::parse("base0", "".lines());
+
+        assert!(entries.contains_base("base0"));
+
+        assert!(entries.remove_base("base0"));
+
+        assert!(!entries.contains_base("base0"));
+    }
+
+    #[test]
+    fn include_paired_with_base_operation() {
+        let mut entries = Entries::parse("base0", "include:base1".lines());
+
+        assert!(entries.contains_base("base0"));
+
+        assert!(entries.remove_base("base0"));
+
+        assert_matches!(entries.next_include(), None);
+
+        assert!(!entries.contains_base("base0"));
+
+        //
+
+        let mut entries = Entries::parse("base0", "include:base1".lines());
+
+        assert!(entries.contains_base("base0"));
+
+        assert!(entries.remove_base("base0"));
+
+        let drain: Box<[_]> = entries.drain_includes().collect();
+        assert_eq!(drain.len(), 0);
+
+        assert!(!entries.contains_base("base0"));
+
+        //
+
+        let mut entries = Entries::parse("base0", "include:base1".lines());
+        entries.parse_include("base1", "include:base2".lines());
+
+        assert!(entries.contains_base("base0"));
+
+        assert!(entries.remove_base("base0"));
+
+        assert_eq!(entries.next_include().unwrap().target(), "base2");
+
+        assert!(!entries.contains_base("base0"));
     }
 }
