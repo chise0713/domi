@@ -68,11 +68,12 @@ impl From<Entries> for GeoSiteList {
     fn from(mut entries: Entries) -> Self {
         let bases = entries.bases();
 
-        GeoSiteList::from_iter(
-            bases
+        Self {
+            entry: bases
                 .filter_map(|base| entries.flatten(&base, None))
-                .map(GeoSite::from),
-        )
+                .map(GeoSite::from)
+                .collect(),
+        }
     }
 }
 
@@ -93,38 +94,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_iter() {
-        use crate::BASE;
-        const CONTENT: &str = "\
-            keyword:keyword
-            keyword:keyword # dedup
-        ";
-
-        let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
-        let flattened = entries.flatten(BASE, None).unwrap();
-        let geosite_list = GeoSiteList::from_iter([GeoSite::from(flattened)]);
-        assert_eq!(geosite_list.entry.len(), 1);
-        assert_eq!(
-            geosite_list.entry.into_iter().next().unwrap(),
-            GeoSite {
-                country_code: BASE.into(),
-                domain: [proto::Domain {
-                    r#type: Type::Plain.into(),
-                    value: "keyword".into(),
-                    attribute: [].into()
-                }]
-                .into()
-            }
-        )
-    }
-
-    #[test]
-    fn from_entries() {
+    fn generate_entries() -> Entries {
         let pairs = [
-            ("base1", "keyword:keyword"),
             ("base2", "regexp:regexp"),
-            ("base2", "regexp:regexp"), // dedup
+            ("base1", "keyword:keyword"), // base (country_code) ord test
+            ("base2", "regexp:regexp"),   // dedup
         ];
         let mut entries = crate::Entries::parse("base0", "full:full".lines());
         assert_eq!(
@@ -134,10 +108,73 @@ mod tests {
                 .count(),
             3
         );
-        let geosite_list = GeoSiteList::from(entries);
+
+        entries
+    }
+
+    #[test]
+    fn from_iter() {
+        let mut entries = generate_entries();
+
+        let mut out = Vec::new();
+        for base in entries.bases() {
+            out.push(entries.flatten(&base, None).unwrap());
+        }
+
+        let geosite_list = GeoSiteList::from_iter(out.into_iter().map(GeoSite::from));
+
+        assert_eq!(geosite_list.entry.len(), 3);
+
+        let mut iter = geosite_list.entry.into_iter();
         assert_eq!(
-            geosite_list.entry.len(),
-            3 // base0 + base1 + base2
-        )
+            iter.next().unwrap(),
+            GeoSite {
+                country_code: "base0".to_owned(),
+                domain: [proto::Domain {
+                    r#type: Type::Full.into(),
+                    value: "full".into(),
+                    attribute: [].into()
+                }]
+                .into()
+            }
+        );
+        assert_eq!(
+            iter.next().unwrap(),
+            GeoSite {
+                country_code: "base1".to_owned(),
+                domain: [proto::Domain {
+                    r#type: Type::Plain.into(),
+                    value: "keyword".into(),
+                    attribute: [].into()
+                }]
+                .into()
+            }
+        );
+        assert_eq!(
+            iter.next().unwrap(),
+            GeoSite {
+                country_code: "base2".to_owned(),
+                domain: [proto::Domain {
+                    r#type: Type::Regex.into(),
+                    value: "regexp".into(),
+                    attribute: [].into()
+                }]
+                .into()
+            }
+        );
+    }
+
+    #[test]
+    fn from_entries() {
+        let mut entries = generate_entries();
+        assert_eq!(
+            GeoSiteList::from(generate_entries()),
+            GeoSiteList::from_iter({
+                entries
+                    .bases()
+                    .filter_map(|b| entries.flatten(&b, None))
+                    .map(GeoSite::from)
+            })
+        );
     }
 }

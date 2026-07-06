@@ -32,12 +32,10 @@ impl From<FlatDomains> for Rule {
             let Kind::Domain(kind) = domains.first().unwrap().kind else {
                 unreachable!("not a domain kind");
             };
-            let mut values: Vec<_> = domains
+            let values: Box<[_]> = domains
                 .into_iter()
                 .map(|d| Box::from(d.value.as_ref()))
                 .collect();
-            values.dedup();
-            let values = values.into_boxed_slice();
             match kind {
                 DomainKind::Suffix => rule.domain_suffix = Some(values),
                 DomainKind::Full => rule.domain = Some(values),
