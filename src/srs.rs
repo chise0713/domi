@@ -32,10 +32,15 @@ impl From<FlatDomains> for Rule {
             let Kind::Domain(kind) = domains.first().unwrap().kind else {
                 unreachable!("not a domain kind");
             };
-            let values: Box<[_]> = domains
+            let mut values: Vec<_> = domains
                 .into_iter()
                 .map(|d| Box::from(d.value.as_ref()))
                 .collect();
+            // extra dedup, b.c. `FlatDomains` wont't dedup
+            // when two entry has the same value and type,
+            // but has different attrs (which are not used in `Rule`)
+            values.dedup();
+            let values = values.into_boxed_slice();
             match kind {
                 DomainKind::Suffix => rule.domain_suffix = Some(values),
                 DomainKind::Full => rule.domain = Some(values),
@@ -65,6 +70,7 @@ impl FromIterator<Rule> for RuleSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BASE, Entries};
 
     #[test]
     fn sort_predictable() {
@@ -75,14 +81,29 @@ mod tests {
     }
 
     #[test]
+    fn dedup_attr() {
+        let mut entries = Entries::parse(
+            BASE,
+            "\
+        domain:abc
+        domain:abc @attr1
+        "
+            .lines(),
+        );
+
+        let rule = Rule::from(entries.flatten(BASE, None).unwrap());
+
+        assert_eq!(rule.domain_suffix.unwrap().len(), 1)
+    }
+
+    #[test]
     fn from_iter() {
-        use crate::BASE;
         const CONTENT: &str = "\
             keyword:keyword
             keyword:keyword # dedup
         ";
 
-        let mut entries = crate::Entries::parse(BASE, CONTENT.lines());
+        let mut entries = Entries::parse(BASE, CONTENT.lines());
         let flattened = entries.flatten(BASE, None).unwrap();
         let rule_set = RuleSet::from_iter([Rule::from(flattened)]);
         assert_eq!(rule_set.rules.len(), 1);
