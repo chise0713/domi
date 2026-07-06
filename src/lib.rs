@@ -428,20 +428,6 @@ impl Entries {
     /// all currently pending includes are considered visited.
     ///
     /// To process includes incrementally, call [`Entries::drain_includes`] repeatedly.
-    /// # Example:
-    /// ```rust,no_run
-    /// # use std::fs;
-    /// # use domi::Entries;
-    /// # const BASE: &str = "";
-    /// # let mut entries = Entries::parse(BASE, "".lines());
-    /// while let Some(i) = entries.drain_includes().next() {
-    ///     if entries.is_included(i.target()) {
-    ///         continue;
-    ///     }
-    ///     let include = fs::read_to_string(i.target()).unwrap();
-    ///     entries.parse_include(i.target(), include.lines());
-    /// }
-    /// ```
     pub fn drain_includes(&mut self) -> impl Iterator<Item = Include> + use<> {
         let drain: Box<[_]> = self
             .bases
