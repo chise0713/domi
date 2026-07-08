@@ -1,61 +1,68 @@
+#[cfg(test)]
+use std::cell::Cell;
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::HashSet,
+    fmt,
     hash::{BuildHasher, Hash},
     marker::PhantomData,
-    panic::catch_unwind,
+    panic::{AssertUnwindSafe, catch_unwind},
     rc::Rc,
 };
 
 use crate::Hasher;
 
+#[cold]
+#[inline(never)]
+fn missing_pool() -> ! {
+    panic!("intern pool not initialized; missing PoolGuard");
+}
+
+#[repr(transparent)]
 struct Interner<T>
 where
     T: Eq + Hash + ?Sized,
 {
-    set: Option<HashSet<Rc<T>, Hasher>>,
+    set: HashSet<Rc<T>, Hasher>,
 }
 
 impl<T> Interner<T>
 where
     T: Eq + Hash + ?Sized,
 {
-    const fn new() -> Self {
-        Self { set: None }
+    #[inline]
+    fn new() -> Self {
+        Self {
+            set: HashSet::default(),
+        }
     }
 
-    fn initialize(&mut self) {
-        self.set = Some(HashSet::default())
-    }
-
+    #[inline]
     fn intern(&mut self, s: Rc<T>) -> Rc<T> {
-        let set = self
-            .set
-            .as_mut()
-            .expect("intern pool not initialized; missing PoolGuard");
-        if let Some(v) = set.get(&s) {
+        if let Some(v) = self.set.get(&s) {
             v.clone()
         } else {
-            set.insert(s.clone());
+            self.set.insert(s.clone());
             s
         }
     }
 
+    #[inline]
     fn intern_ref(&self, value: &T) -> Option<Rc<T>> {
-        let set = self.set.as_ref()?;
-        set.get(value).cloned()
+        self.set.get(value).cloned()
     }
 
     // reduce inc, dec ref count
+    #[inline]
     fn intern_id(&self, value: &T) -> Option<InternId> {
-        let set = self.set.as_ref()?;
-
         // Safety: it's from interner
-        Some(unsafe { InternId::from_interned(set.get(value)?) })
+        Some(unsafe { InternId::from_interned(self.set.get(value)?) })
     }
 
+    #[inline]
     fn clear(&mut self) {
-        self.set = None;
+        self.set.clear();
+        self.set.shrink_to_fit();
     }
 }
 
@@ -77,7 +84,7 @@ impl InternId {
     }
 }
 
-impl std::fmt::Debug for InternId {
+impl fmt::Debug for InternId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("InternId")
             .field(&(self.0 as *const ()))
@@ -123,40 +130,121 @@ impl std::hash::Hasher for InternIdHasher {
     }
 }
 
-macro_rules! define_pool {
-    ($name:ident, $ty:ty) => {
+macro_rules! define_pools {
+    (
+        $(
+            $name:ident : $ty:ty
+        ),* $(,)?
+    ) => {
         ::paste::paste! {
+            struct PoolState {
+                used_count: isize,
+                $(
+                    [<$name:snake>]: Interner<$ty>,
+                )*
+            }
+
+            impl PoolState {
+                fn new() -> Self {
+                    Self {
+                        used_count: 0,
+                        $(
+                            [<$name:snake>]: Interner::new(),
+                        )*
+                    }
+                }
+
+                fn acquire(&mut self) {
+                    assert!(self.used_count != isize::MAX, "Pool is poisoned due to previous panic in Drop");
+
+                    if self.used_count == 0 {
+                        self.used_count = 1;
+                    } else {
+                        self.used_count += 1;
+                    }
+                }
+
+                fn release(&mut self) {
+                    if self.used_count == isize::MAX {
+                        return;
+                    }
+
+                    assert!(self.used_count > 0, "PoolState.used_count underflow");
+
+                    self.used_count -= 1;
+                    if self.used_count > 0 {
+                        return;
+                    }
+
+                    if catch_unwind(AssertUnwindSafe(|| self.clear())).is_err() {
+                        self.used_count = isize::MAX;
+                    } else {
+                        self.used_count = 0;
+                    };
+                }
+
+                fn clear(&mut self) {
+                    #[cfg(test)]
+                    if FORCE_CLEAR_PANIC.get() {
+                        panic!("forced");
+                    };
+
+                    $(
+                        self.[<$name:snake>].clear();
+                    )*
+                }
+            }
+
             thread_local! {
-                static [< $name:snake:upper _POOL >]: RefCell<Interner<$ty>> = const { RefCell::new(Interner::new()) };
+                static POOL_STATE: RefCell<PoolState> = RefCell::new(PoolState::new());
             }
-            pub(crate) struct [< $name Pool >];
-            impl [< $name Pool >] {
-                fn initialize() {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().initialize())
+
+            $(
+                pub(crate) struct [<$name Pool>];
+
+                impl [<$name Pool>] {
+                    #[inline]
+                    pub(crate) fn [<$name:snake>](value: Rc<$ty>) -> Rc<$ty> {
+                        POOL_STATE.with_borrow_mut(|p| {
+                            if p.used_count <= 0 {
+                                missing_pool()
+                            }
+                            p.[<$name:snake>].intern(value)
+                        })
+                    }
+
+                    #[inline]
+                    pub(crate) fn [<$name:snake _ref>](value: &$ty) -> Option<Rc<$ty>> {
+                        POOL_STATE.with_borrow(|p| {
+                            if p.used_count <= 0 {
+                                missing_pool()
+                            }
+                            p.[<$name:snake>].intern_ref(value)
+                        })
+                    }
                 }
-                pub(crate) fn [< $name:snake >](value: Rc<$ty>) -> Rc<$ty> {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().intern(value))
-                }
-                pub(crate) fn [< $name:snake _ref >](value: &$ty) -> Option<Rc<$ty>> {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow().intern_ref(value))
-                }
-                fn clear() {
-                    [< $name:snake:upper _POOL >].with(|p| p.borrow_mut().clear())
-                }
-            }
+            )*
         }
     };
 }
 
-define_pool!(Base, str);
-define_pool!(Attr, str);
-define_pool!(DomainValue, str);
-define_pool!(AttrSlice, [Rc<str>]);
+define_pools! {
+    Base: str,
+    Attr: str,
+    DomainValue: str,
+    AttrSlice: [Rc<str>],
+}
 
 impl BasePool {
+    #[inline]
     pub(crate) fn base_id(value: &str) -> Option<InternId> {
-        BASE_POOL.with(|p| p.borrow().intern_id(value))
+        POOL_STATE.with_borrow(|p| p.base.intern_id(value))
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_CLEAR_PANIC: Cell<bool> = const { Cell::new(false) };
 }
 
 macro_rules! maybe_intern {
@@ -184,46 +272,18 @@ macro_rules! intern {
 pub(crate) use intern;
 pub(crate) use maybe_intern;
 
-thread_local! {
-    static POOL_USED_COUNT: Cell<isize> = const { Cell::new(0) };
-}
-
 type NotSyncNorSend = PhantomData<Rc<()>>;
 
-#[derive(Debug)]
 pub(crate) struct PoolGuard {
     _marker: NotSyncNorSend,
 }
 
 impl PoolGuard {
     pub(crate) fn acquire() -> Self {
-        let n = POOL_USED_COUNT.get();
-        if n <= 0 {
-            POOL_USED_COUNT.set(1);
-            #[cfg(debug_assertions)]
-            if n < 0 {
-                dbg!("POOL_USED_COUNT underflow", n);
-            }
-            Self::clear_pools();
-            AttrPool::initialize();
-            BasePool::initialize();
-            DomainValuePool::initialize();
-            AttrSlicePool::initialize();
-        } else if n == isize::MAX {
-            panic!("Pool is poisoned due to previous panic in Drop");
-        } else {
-            POOL_USED_COUNT.set(n + 1);
-        }
+        POOL_STATE.with_borrow_mut(PoolState::acquire);
         Self {
             _marker: NotSyncNorSend::default(),
         }
-    }
-
-    fn clear_pools() {
-        AttrPool::clear();
-        BasePool::clear();
-        DomainValuePool::clear();
-        AttrSlicePool::clear();
     }
 }
 
@@ -235,19 +295,13 @@ impl Default for PoolGuard {
 
 impl Drop for PoolGuard {
     fn drop(&mut self) {
-        let n = POOL_USED_COUNT.get() - 1;
-        if n <= 0 {
-            POOL_USED_COUNT.set(0);
-            if catch_unwind(Self::clear_pools).is_err() {
-                POOL_USED_COUNT.set(isize::MAX);
-            };
-            #[cfg(debug_assertions)]
-            if n < 0 {
-                dbg!("POOL_USED_COUNT underflow", n);
-            }
-        } else {
-            POOL_USED_COUNT.set(n);
-        }
+        POOL_STATE.with_borrow_mut(PoolState::release)
+    }
+}
+
+impl fmt::Debug for PoolGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PoolGuard").finish()
     }
 }
 
@@ -281,7 +335,7 @@ impl PackedAttr {
     }
 }
 
-impl std::fmt::Debug for PackedAttr {
+impl fmt::Debug for PackedAttr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PackedAttr")
             .field("addr", &(self.addr() as *const ()))
@@ -339,10 +393,7 @@ mod tests {
 
     #[test]
     fn intern_id_hasher() {
-        use std::{
-            assert_matches,
-            panic::{AssertUnwindSafe, catch_unwind},
-        };
+        use std::assert_matches;
 
         let mut h: HashSet<usize, InternIdHasher> = HashSet::default();
         h.insert(1);
@@ -350,5 +401,103 @@ mod tests {
 
         let mut h: HashSet<u8, InternIdHasher> = HashSet::default();
         assert_matches!(catch_unwind(AssertUnwindSafe(|| h.insert(1))), Err(_));
+    }
+
+    #[test]
+    fn pool_clear_panic() {
+        // no pool guard
+        assert!(catch_unwind(|| BasePool::base(Rc::from(""))).is_err());
+
+        let pg = PoolGuard::acquire();
+        // tests are running from different threads,
+        // even if `--test-threads=1` is passed, so no
+        // worries about poison the testing environment
+        FORCE_CLEAR_PANIC.set(true);
+        drop(pg); // <-- trigger a `Drop` panic
+
+        assert!(catch_unwind(PoolGuard::acquire).is_err());
+        assert!(catch_unwind(PoolGuard::acquire).is_err());
+    }
+
+    #[test]
+    fn pool_clear() {
+        {
+            let _pg = PoolGuard::acquire();
+
+            BasePool::base(Rc::from("abc"));
+            assert!(BasePool::base_ref("abc").is_some());
+        }
+
+        {
+            let _pg = PoolGuard::acquire();
+
+            assert!(BasePool::base_ref("abc").is_none());
+        }
+    }
+
+    #[test]
+    fn nested_pool_guard() {
+        let pg1 = PoolGuard::acquire();
+        let pg2 = PoolGuard::acquire();
+
+        BasePool::base(Rc::from("hello"));
+
+        drop(pg2);
+
+        BasePool::base(Rc::from("hello"));
+
+        drop(pg1);
+
+        assert!(catch_unwind(|| BasePool::base(Rc::from("hello"))).is_err());
+    }
+
+    #[test]
+    fn intern() {
+        let _g = PoolGuard::acquire();
+
+        let a = BasePool::base(Rc::from("abc"));
+        let b = BasePool::base(Rc::from("abc"));
+
+        assert!(Rc::ptr_eq(&a, &b));
+
+        assert_eq!(Rc::strong_count(&a), 3);
+    }
+
+    #[test]
+    fn intern_ref() {
+        let _pg = PoolGuard::acquire();
+
+        assert!(BasePool::base_ref("abc").is_none());
+
+        let a = BasePool::base(Rc::from("abc"));
+
+        let b = BasePool::base_ref("abc").unwrap();
+
+        assert!(Rc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn intern_id() {
+        let _pg = PoolGuard::acquire();
+
+        BasePool::base(Rc::from("abc"));
+
+        let a = BasePool::base_id("abc").unwrap();
+        let b = BasePool::base_id("abc").unwrap();
+
+        assert_eq!(a, b);
+
+        assert!(BasePool::base_id("def").is_none());
+    }
+
+    #[test]
+    fn pool_underflow() {
+        assert!(
+            catch_unwind(|| {
+                let mut s = PoolState::new();
+                s.release()
+            })
+            .is_err()
+        );
     }
 }

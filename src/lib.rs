@@ -549,7 +549,7 @@ impl Entries {
 
         let mut flattened = Vec::with_capacity(self.cap());
 
-        self.flatten_recursive(base.clone(), &mut visited, &mut flattened);
+        self.flatten_recursive(&base, &mut visited, &mut flattened);
 
         flattened
             .retain(|entry| flatten::filter_matches_all(&entry.attrs, attr_filters.as_deref()));
@@ -571,19 +571,19 @@ impl Entries {
 
     fn flatten_recursive(
         &self,
-        base: Rc<str>,
+        base: &Rc<str>,
         visited: &mut Vec<InternId>,
         flattened: &mut Vec<Entry>,
     ) {
         // Safety: base is from `BasePool::base_ref()?` at `Self::flatten()`
-        let intern_id = unsafe { InternId::from_interned(&base) };
+        let intern_id = unsafe { InternId::from_interned(base) };
 
         if visited.contains(&intern_id) {
             return;
         }
         visited.push(intern_id);
 
-        let Some(node) = self.bases.get(&base) else {
+        let Some(node) = self.bases.get(base) else {
             visited.pop();
             return;
         };
@@ -595,7 +595,7 @@ impl Entries {
         for include in &node.includes {
             let begin = flattened.len();
 
-            self.flatten_recursive(include.target.clone(), visited, flattened);
+            self.flatten_recursive(&include.target, visited, flattened);
 
             flattened
                 .extract_if(begin.., |entry| {
