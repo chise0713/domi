@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::cell::Cell;
 use std::{
     cell::RefCell,
     collections::HashSet,
@@ -244,7 +242,7 @@ impl BasePool {
 
 #[cfg(test)]
 thread_local! {
-    static FORCE_CLEAR_PANIC: Cell<bool> = const { Cell::new(false) };
+    static FORCE_CLEAR_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 macro_rules! maybe_intern {

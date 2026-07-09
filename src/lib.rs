@@ -546,10 +546,11 @@ impl Entries {
             attr_filters.map(|afs| afs.iter().map(afs_map).collect());
 
         let mut visited = Vec::with_capacity(8);
+        let mut active_filters = Vec::with_capacity(8);
 
         let mut flattened = Vec::with_capacity(self.cap());
 
-        self.flatten_recursive(&base, &mut visited, &mut flattened);
+        self.flatten_recursive(&base, &mut visited, &mut flattened, &mut active_filters);
 
         flattened
             .retain(|entry| flatten::filter_matches_all(&entry.attrs, attr_filters.as_deref()));
@@ -574,6 +575,7 @@ impl Entries {
         base: &Rc<str>,
         visited: &mut Vec<InternId>,
         flattened: &mut Vec<Entry>,
+        active_filters: &mut Vec<PackedAttr>,
     ) {
         // Safety: base is from `BasePool::base_ref()?` at `Self::flatten()`
         let intern_id = unsafe { InternId::from_interned(base) };
@@ -588,23 +590,26 @@ impl Entries {
             return;
         };
 
+        let filters = if active_filters.is_empty() {
+            None
+        } else {
+            Some(active_filters.as_slice())
+        };
+
         for entry in &node.normal {
-            flattened.push(entry.clone());
+            if flatten::filter_matches_all(&entry.attrs, filters) {
+                flattened.push(entry.clone());
+            }
         }
 
         for include in &node.includes {
-            let begin = flattened.len();
+            let old_len = active_filters.len();
 
-            self.flatten_recursive(&include.target, visited, flattened);
+            active_filters.extend(include.attrs.iter().copied());
 
-            flattened
-                .extract_if(begin.., |entry| {
-                    !include
-                        .attrs
-                        .iter()
-                        .all(|attr| flatten::filter_matches(&entry.attrs, attr))
-                })
-                .for_each(drop);
+            self.flatten_recursive(&include.target, visited, flattened, active_filters);
+
+            active_filters.truncate(old_len);
         }
 
         visited.pop();
