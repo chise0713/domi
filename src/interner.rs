@@ -136,7 +136,7 @@ macro_rules! define_pools {
     ) => {
         ::paste::paste! {
             struct PoolState {
-                used_count: isize,
+                used_count: usize,
                 $(
                     [<$name:snake>]: Interner<$ty>,
                 )*
@@ -153,17 +153,13 @@ macro_rules! define_pools {
                 }
 
                 fn acquire(&mut self) {
-                    assert!(self.used_count != isize::MAX, "Pool is poisoned due to previous panic in Drop");
+                    assert!(self.used_count != usize::MAX, "Pool is poisoned due to previous panic in Drop");
 
-                    if self.used_count == 0 {
-                        self.used_count = 1;
-                    } else {
-                        self.used_count += 1;
-                    }
+                    self.used_count += 1;
                 }
 
                 fn release(&mut self) {
-                    if self.used_count == isize::MAX {
+                    if self.used_count == usize::MAX {
                         return;
                     }
 
@@ -175,7 +171,7 @@ macro_rules! define_pools {
                     }
 
                     if catch_unwind(AssertUnwindSafe(|| self.clear())).is_err() {
-                        self.used_count = isize::MAX;
+                        self.used_count = usize::MAX;
                     } else {
                         self.used_count = 0;
                     };
@@ -204,7 +200,7 @@ macro_rules! define_pools {
                     #[inline]
                     pub(crate) fn [<$name:snake>](value: Rc<$ty>) -> Rc<$ty> {
                         POOL_STATE.with_borrow_mut(|p| {
-                            if p.used_count <= 0 {
+                            if p.used_count == 0 {
                                 missing_pool()
                             }
                             p.[<$name:snake>].intern(value)
@@ -214,7 +210,7 @@ macro_rules! define_pools {
                     #[inline]
                     pub(crate) fn [<$name:snake _ref>](value: &$ty) -> Option<Rc<$ty>> {
                         POOL_STATE.with_borrow(|p| {
-                            if p.used_count <= 0 {
+                            if p.used_count == 0 {
                                 missing_pool()
                             }
                             p.[<$name:snake>].intern_ref(value)
