@@ -41,6 +41,7 @@ mod interner;
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     fmt::Display,
+    iter::FusedIterator,
     ops::Deref,
     rc::Rc,
     str::Lines,
@@ -227,6 +228,61 @@ impl Entry {
     }
 }
 
+macro_rules! iterator_wrapper {
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident($item:ty);
+    ) => {
+        $(#[$meta])*
+        #[repr(transparent)]
+        $vis struct $name(std::vec::IntoIter<$item>);
+
+        impl Iterator for $name {
+            type Item = $item;
+
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                self.0.next()
+            }
+
+            #[inline]
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                self.0.size_hint()
+            }
+        }
+
+        impl DoubleEndedIterator for $name {
+            #[inline]
+            fn next_back(&mut self) -> Option<Self::Item> {
+                self.0.next_back()
+            }
+        }
+
+        impl std::fmt::Debug for $name
+        where
+            $item: std::fmt::Debug,
+        {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl ExactSizeIterator for $name {}
+
+        impl FusedIterator for $name {}
+    };
+}
+
+iterator_wrapper! {
+    /// The iterator returned by [`Entries::bases`].
+    pub struct Bases(Rc<str>);
+}
+
+iterator_wrapper! {
+    /// The iterator returned by [`Entries::drain_includes`].
+    pub struct Includes(Include);
+}
+
 #[derive(Debug, Default)]
 struct BaseEntries {
     normal: Vec<Entry>,
@@ -378,9 +434,9 @@ impl Entries {
     /// Returns an iterator over all bases.
     ///
     /// Bases are ordered by their [`Ord`] implementation.
-    pub fn bases(&self) -> impl Iterator<Item = Rc<str>> + use<> {
+    pub fn bases(&self) -> Bases {
         let bases: Box<[_]> = self.bases.keys().cloned().collect();
-        bases.into_iter()
+        Bases(bases.into_iter())
     }
 
     /// Returns `true` if the specified base exists.
@@ -446,7 +502,7 @@ impl Entries {
     /// all currently pending includes are considered visited.
     ///
     /// To process includes incrementally, call [`Entries::drain_includes`] repeatedly.
-    pub fn drain_includes(&mut self) -> impl Iterator<Item = Include> + use<> {
+    pub fn drain_includes(&mut self) -> Includes {
         let mut out = Vec::new();
 
         while let Some(id) = self.include_queue.pop_front() {
@@ -460,7 +516,7 @@ impl Entries {
             node.queued = false;
         }
 
-        out.into_iter()
+        Includes(out.into_iter())
     }
 
     /// Returns the next pending include, advancing the internal include cursor.
@@ -617,7 +673,7 @@ impl Entries {
 }
 
 mod flatten {
-    use std::{cmp::Ordering, rc::Rc};
+    use std::cmp::Ordering;
 
     use super::*;
 
