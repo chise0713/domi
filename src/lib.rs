@@ -843,8 +843,9 @@ impl FlatDomains {
     pub fn take_next(&mut self) -> Option<Box<[Entry]>> {
         let kind = self.inner.last()?.kind;
         let idx = self.inner.partition_point(|d| d.kind != kind);
-        let v = self.inner.split_off(idx).into_boxed_slice();
-        (!v.is_empty()).then_some(v)
+        // The predicate is false for the last element, therefore
+        // `partition_point(...) < self.inner.len()`, making `split_off(idx)` non-empty.
+        Some(self.inner.split_off(idx).into_boxed_slice())
     }
 }
 
