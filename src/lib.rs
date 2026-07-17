@@ -57,10 +57,10 @@ use crate::interner::{
 const SMALL_VEC_STACK_SIZE: usize = 4;
 
 cfg_if! {
-    if #[cfg(feature = "ahash")] {
-        use ::ahash::RandomState as Hasher;
-    } else if #[cfg(feature = "rustc-hash")] {
+    if #[cfg(feature = "rustc-hash")] {
         use ::rustc_hash::FxBuildHasher as Hasher;
+    } else if #[cfg(feature = "ahash")] {
+        use ::ahash::RandomState as Hasher;
     } else {
         use ::std::collections::hash_map::RandomState as Hasher;
     }
@@ -543,11 +543,6 @@ impl Entries {
         None
     }
 
-    #[inline]
-    fn cap(&self) -> usize {
-        self.bases.values().map(|b| b.normal.len()).sum()
-    }
-
     /// Flatten domains by `base` with optional attribute filters,
     /// then **[`sort`][slice::sort]** and **[`dedup`][Vec::dedup]** the selected domains.
     ///
@@ -600,7 +595,7 @@ impl Entries {
         let mut visited = Vec::with_capacity(8);
         let mut active_filters = Vec::with_capacity(8);
 
-        let mut flattened = Vec::with_capacity(self.cap());
+        let mut flattened = Vec::new();
 
         self.flatten_recursive(&base, &mut visited, &mut flattened, &mut active_filters);
 

@@ -1,6 +1,9 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
+    if cfg!(feature = "rustc-hash") && cfg!(feature = "ahash") {
+        println!("cargo:warning=both ahash and rustc-hash enabled; using rustc-hash");
+    }
     #[cfg(feature = "prost")]
     {
         const GEOSITE_PROTO: &str = "proto/geosite.proto";

@@ -16,7 +16,10 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
 [features]
 default = ["serde", "rustc-hash"]
+# Alternative hash backend.
+# Performance may vary depending on the workload.
 ahash = ["dep:ahash"]
+# Default hash backend for domi.
 rustc-hash = ["dep:rustc-hash"]
 serde = ["dep:serde", "dep:serde_with"]
 prost = ["dep:prost", "dep:prost-build"]
@@ -63,6 +66,12 @@ required-features = ["prost"]
 [[example]]
 name = "iter_all"
 
+[[bench]]
+name = "pipeline"
+harness = false
+
+
 [dev-dependencies]
 serde_json = "^1"
 prost = "^0.14"
+criterion = "^0.8"
