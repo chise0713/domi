@@ -435,7 +435,7 @@ impl Entries {
     ///
     /// Bases are ordered by their [`Ord`] implementation.
     pub fn bases(&self) -> Bases {
-        let bases: Box<[_]> = self.bases.keys().cloned().collect();
+        let bases: Vec<_> = self.bases.keys().cloned().collect();
         Bases(bases.into_iter())
     }
 
@@ -534,7 +534,7 @@ impl Entries {
             if node.next_include == node.includes.len() {
                 node.queued = false;
             } else {
-                self.include_queue.push_back(id);
+                self.include_queue.push_front(id);
             }
 
             return Some(include);
@@ -568,11 +568,7 @@ impl Entries {
     ///
     /// Returns [`None`] if no domains are selected (i.e., the result is empty),
     /// or if `base` was never seen during parsing.
-    pub fn flatten(
-        &mut self,
-        base: &str,
-        attr_filters: Option<&[AttrFilter]>,
-    ) -> Option<FlatDomains> {
+    pub fn flatten(&self, base: &str, attr_filters: Option<&[AttrFilter]>) -> Option<FlatDomains> {
         if self.bases.is_empty() {
             return None;
         }
@@ -957,7 +953,7 @@ mod tests {
             domain:domain.full.com # will stay
         ";
 
-        let mut entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content.lines());
 
         let flat = entries.flatten(BASE, None).unwrap();
         let flat_domains = flat.into_vec();
@@ -985,7 +981,7 @@ mod tests {
             regexp:regexp
         ";
 
-        let mut entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content.lines());
 
         let mut flat = entries.flatten(BASE, None).unwrap();
 
@@ -1016,7 +1012,7 @@ mod tests {
             full:full @attr1 # no dedup
         ";
 
-        let mut entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content.lines());
 
         let flat = entries.flatten(BASE, None).unwrap().into_vec();
 

@@ -65,7 +65,7 @@ impl FromIterator<GeoSite> for GeoSiteList {
 }
 
 impl From<Entries> for GeoSiteList {
-    fn from(mut entries: Entries) -> Self {
+    fn from(entries: Entries) -> Self {
         let bases = entries.bases();
 
         Self {
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn from_iter() {
-        let mut entries = generate_entries();
+        let entries = generate_entries();
 
         let mut out = Vec::new();
         for base in entries.bases() {
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn from_entries() {
-        let mut entries = generate_entries();
+        let entries = generate_entries();
         assert_eq!(
             GeoSiteList::from(generate_entries()),
             GeoSiteList::from_iter({

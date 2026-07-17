@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn dedup_attr() {
-        let mut entries = Entries::parse(
+        let entries = Entries::parse(
             BASE,
             "\
         domain:abc
@@ -103,7 +103,7 @@ mod tests {
             keyword:keyword # dedup
         ";
 
-        let mut entries = Entries::parse(BASE, CONTENT.lines());
+        let entries = Entries::parse(BASE, CONTENT.lines());
         let flattened = entries.flatten(BASE, None).unwrap();
         let rule_set = RuleSet::from_iter([Rule::from(flattened)]);
         assert_eq!(rule_set.rules.len(), 1);
