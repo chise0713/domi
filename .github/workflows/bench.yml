@@ -1,0 +1,45 @@
+name: Benchmark
+
+on:
+  push:
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/bench.yml"
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  bench:
+    name: Bench
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+      - name: Install Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - name: Cache cargo registry, index, and targets
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          prefix-key: "cargo-bench"
+          add-job-id-key: false
+      - name: Checkout domain-list-community repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: v2fly/domain-list-community
+          fetch-depth: 1
+          path: dlc/
+      - name: Run benchmarks
+        run: |
+          echo -e "### Benchmark results\n" '```console' >> $GITHUB_STEP_SUMMARY
+          DATASET=dlc/data cargo bench --bench pipeline --no-default-features --features rustc-hash \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        shell: bash
