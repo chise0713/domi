@@ -340,6 +340,8 @@ impl fmt::Debug for PackedAttr {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
 
     #[test]
@@ -486,12 +488,12 @@ mod tests {
 
     #[test]
     fn pool_underflow() {
-        assert!(
+        assert_matches!(
             catch_unwind(|| {
                 let mut s = PoolState::new();
                 s.release()
-            })
-            .is_err()
+            }),
+            Err(_)
         );
     }
 }

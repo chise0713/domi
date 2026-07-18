@@ -41,7 +41,7 @@ mod interner;
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
     fmt::Display,
-    iter::FusedIterator,
+    iter::{self, FusedIterator},
     ops::Deref,
     rc::Rc,
     str::Lines,
@@ -189,21 +189,20 @@ impl Entry {
 
     #[inline(always)]
     fn parse_line_inner<const USE_POOL: bool>(line: OneLine) -> Option<Self> {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        let line = line.split_once('#').map_or(&*line, |(l, _)| l).trim();
+
+        if line.is_empty() {
             return None;
         }
 
-        let line = line.split_once('#').map(|(l, _)| l).unwrap_or(line).trim();
-
-        let (kind_str, value) = line.split_once(':').unwrap_or(("domain", line));
-        let kind = match kind_str {
-            "domain" => Kind::Domain(DomainKind::Suffix),
-            "full" => Kind::Domain(DomainKind::Full),
-            "regexp" => Kind::Domain(DomainKind::Regex),
-            "keyword" => Kind::Domain(DomainKind::Keyword),
-            "include" => Kind::Include,
-            _ => unimplemented!("unknown domain kind prefix: {kind_str}"),
+        let (kind, value) = match line.split_once(':') {
+            Some(("domain", value)) => (Kind::Domain(DomainKind::Suffix), value),
+            Some(("full", value)) => (Kind::Domain(DomainKind::Full), value),
+            Some(("regexp", value)) => (Kind::Domain(DomainKind::Regex), value),
+            Some(("keyword", value)) => (Kind::Domain(DomainKind::Keyword), value),
+            Some(("include", value)) => (Kind::Include, value),
+            Some((kind, _)) => unimplemented!("unknown domain kind prefix: {kind}"),
+            None => (Kind::Domain(DomainKind::Suffix), line),
         };
 
         let mut parts = value.split_ascii_whitespace();
@@ -216,13 +215,29 @@ impl Entry {
             }
         })?;
 
-        let attrs: AttrSlice = parts
-            .filter_map(|s| {
-                s.strip_prefix('@')
-                    .map(|s| maybe_intern!(USE_POOL, s, Attr))
-            })
-            .collect();
-        let attrs = maybe_intern!(USE_POOL, attrs.as_ref(), AttrSlice);
+        let attrs = if let Some(first) = parts.next() {
+            let attrs: AttrSlice = iter::once(first)
+                .chain(parts)
+                .map(|s| {
+                    let Some(s) = s.strip_prefix('@') else {
+                        unimplemented!("attribute must start with '@'");
+                    };
+                    maybe_intern!(USE_POOL, s, Attr)
+                })
+                .collect();
+            maybe_intern!(USE_POOL, attrs.as_ref(), AttrSlice)
+        } else {
+            // Empty attrs are frequent. Keep a shared canonical Rc instead of
+            // performing an interner lookup for the empty slice.
+            if USE_POOL {
+                thread_local! {
+                    static EMPTY_ATTR_RC: Rc<[Rc<str>]> = Rc::from([]);
+                }
+                EMPTY_ATTR_RC.with(Rc::clone)
+            } else {
+                Rc::from([])
+            }
+        };
 
         Some(Self { kind, value, attrs })
     }
@@ -848,7 +863,7 @@ mod sort_predictable;
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
+    use std::{assert_matches, panic::catch_unwind};
 
     use super::*;
 
@@ -871,6 +886,32 @@ mod tests {
     fn rejects_cr() {
         let s = "hello\rworld";
         assert!(OneLine::new(s).is_none());
+    }
+
+    #[test]
+    fn parse_line_fail() {
+        assert_matches!(
+            catch_unwind(|| {
+                // wrong kind
+                Entry::parse_line(OneLine::new("not_a_kind:example.com @attr1").unwrap())
+            }),
+            Err(_)
+        );
+        assert_matches!(
+            catch_unwind(|| {
+                // not a attr
+                Entry::parse_line(OneLine::new("domain:example.com random_token").unwrap())
+            }),
+            Err(_)
+        );
+    }
+
+    #[test]
+    fn parse_line_empty_attr_intern_ptr_eq() {
+        let _pg = PoolGuard::acquire();
+        let a_1 = Entry::parse_line_inner::<true>(OneLine::new("a").unwrap()).unwrap();
+        let a_2 = Entry::parse_line_inner::<true>(OneLine::new("a").unwrap()).unwrap();
+        assert!(a_1.ptr_eq(&a_2))
     }
 
     #[test]
