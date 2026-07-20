@@ -782,6 +782,11 @@ cfg_if! {
     }
 }
 
+iterator_wrapper! {
+    /// A batch of entries sharing the same [`Kind`].
+    pub struct Batch(Entry);
+}
+
 /// Domain entries flattened by [`Entries::flatten`]
 #[derive(Debug, Clone)]
 pub struct FlatDomains {
@@ -846,12 +851,15 @@ impl FlatDomains {
     /// at the next kind index to reduce allocations.
     ///
     /// At most one call per [`DomainKind`] variant (maximum 4 calls).
-    pub fn take_next(&mut self) -> Option<Box<[Entry]>> {
+    pub fn take_next(&mut self) -> Option<(DomainKind, Batch)> {
         let kind = self.inner.last()?.kind;
+        let Kind::Domain(domain_kind) = kind else {
+            unreachable!("not a domain kind");
+        };
         let idx = self.inner.partition_point(|d| d.kind != kind);
         // The predicate is false for the last element, therefore
         // `partition_point(...) < self.inner.len()`, making `split_off(idx)` non-empty.
-        Some(self.inner.split_off(idx).into_boxed_slice())
+        Some((domain_kind, Batch(self.inner.split_off(idx).into_iter())))
     }
 }
 
@@ -968,7 +976,7 @@ mod tests {
         assert_eq!(taken.len(), 1);
 
         // include remains
-        assert_eq!(entries.drain_includes().size_hint(), (1, Some(1)))
+        assert_eq!(entries.drain_includes().len(), 1)
     }
 
     #[test]
@@ -1030,9 +1038,10 @@ mod tests {
 
         let mut i = 0;
 
-        while let Some(e) = flat.take_next() {
-            assert_eq!(e.len(), 1);
-            assert_eq!(e[0].kind, Kind::Domain(kinds[i]));
+        while let Some((kind, mut batch)) = flat.take_next() {
+            assert_eq!(batch.len(), 1);
+            assert_eq!(kind, kinds[i]);
+            assert_eq!(batch.next().unwrap().kind, Kind::Domain(kind));
             i += 1;
         }
 
@@ -1168,13 +1177,15 @@ mod tests {
 
         assert_eq!(flat.inner.len(), 4);
 
-        assert_eq!(flat.take_next().unwrap()[0], parse_helper("entry_1"));
-        assert_eq!(flat.take_next().unwrap()[0], parse_helper("full:entry_2"));
-        assert_eq!(
-            flat.take_next().unwrap()[0],
-            parse_helper("keyword:entry_3")
-        );
-        assert_eq!(flat.take_next().unwrap()[0], parse_helper("regexp:entry_4"));
+        fn next_entry(flat: &mut FlatDomains) -> Entry {
+            let (_, mut batch) = flat.take_next().unwrap();
+            batch.next().unwrap()
+        }
+
+        assert_eq!(next_entry(&mut flat), parse_helper("entry_1"));
+        assert_eq!(next_entry(&mut flat), parse_helper("full:entry_2"));
+        assert_eq!(next_entry(&mut flat), parse_helper("keyword:entry_3"));
+        assert_eq!(next_entry(&mut flat), parse_helper("regexp:entry_4"));
     }
 
     #[test]
