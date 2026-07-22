@@ -38,7 +38,7 @@ ahash = { version = "^0.8", default-features = false, features = [
 ], optional = true }
 
 # reduce alloc when `Iterator.collect()`
-smallvec = { version = "^1", optional = true }
+smallvec = { version = "^1", features = ["union"], optional = true }
 
 # sing-box rule-set json source
 serde_with = { version = "^3", default-features = false, features = [
