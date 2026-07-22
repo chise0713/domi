@@ -207,12 +207,9 @@ impl Entry {
 
         let mut parts = value.split_ascii_whitespace();
 
-        let value = parts.next().map(|s| {
-            if matches!(kind, Kind::Include) {
-                maybe_intern!(USE_POOL, s, Base)
-            } else {
-                maybe_intern!(USE_POOL, s, DomainValue)
-            }
+        let value = parts.next().map(|s| match kind {
+            Kind::Include => maybe_intern!(USE_POOL, s, Base),
+            _ => maybe_intern!(USE_POOL, s, DomainValue),
         })?;
 
         let attrs = if let Some(first) = parts.next() {
