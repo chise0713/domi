@@ -213,16 +213,28 @@ impl Entry {
         })?;
 
         let attrs = if let Some(first) = parts.next() {
-            let attrs: AttrSlice = iter::once(first)
-                .chain(parts)
-                .map(|s| {
-                    let Some(s) = s.strip_prefix('@') else {
-                        unimplemented!("attribute must start with '@'");
-                    };
-                    maybe_intern!(USE_POOL, s, Attr)
-                })
-                .collect();
-            maybe_intern!(USE_POOL, attrs.as_ref(), AttrSlice)
+            use std::str::SplitAsciiWhitespace;
+            // Most real-world entries do not contain attributes.
+            // Keep attribute parsing out of the hot path.
+            #[cold]
+            #[inline(never)]
+            fn parse_attrs<const USE_POOL: bool>(
+                first: &str,
+                parts: SplitAsciiWhitespace<'_>,
+            ) -> Rc<[Rc<str>]> {
+                let attrs: AttrSlice = iter::once(first)
+                    .chain(parts)
+                    .map(|s| {
+                        let Some(s) = s.strip_prefix('@') else {
+                            unimplemented!("attribute must start with '@'");
+                        };
+                        maybe_intern!(USE_POOL, s, Attr)
+                    })
+                    .collect();
+
+                maybe_intern!(USE_POOL, attrs.as_ref(), AttrSlice)
+            }
+            parse_attrs::<USE_POOL>(first, parts)
         } else {
             // Empty attrs are frequent. Keep a shared canonical Rc instead of
             // performing an interner lookup for the empty slice.
