@@ -183,6 +183,7 @@ impl Entry {
             && Rc::ptr_eq(&self.attrs, &other.attrs)
     }
 
+    #[track_caller]
     pub fn parse_line(line: OneLine) -> Option<Self> {
         Self::parse_line_inner::<false>(line)
     }
@@ -356,6 +357,7 @@ pub struct Entries {
 
 impl Entries {
     #[inline]
+    #[track_caller]
     pub fn parse(base: &str, content: Lines) -> Self {
         let mut ret = Self::default();
         ret.parse_include(base, content);
@@ -380,6 +382,7 @@ impl Entries {
     /// the base has already been parsed. Calling it multiple times with the same
     /// base appends additional entries.
     #[inline]
+    #[track_caller]
     pub fn parse_extend(&mut self, current: &str, content: Lines) {
         let id = intern!(current, Base);
         self.parse_extend_inner(id, content);
@@ -391,6 +394,7 @@ impl Entries {
     /// [`Entries::parse_include`] already avoids duplicate insertion, so
     /// checking beforehand is unnecessary unless include parsing itself is
     /// expensive (such as network-backed IO).
+    #[track_caller]
     pub fn is_included(&self, candidate: &str) -> bool {
         let Some(id) = BasePool::base_id(candidate) else {
             return false;
@@ -405,6 +409,7 @@ impl Entries {
     /// This function is intended for processing [`Include`] targets. Subsequent
     /// calls with the same base are ignored.
     #[inline]
+    #[track_caller]
     pub fn parse_include(&mut self, current: &str, content: Lines) {
         let id = intern!(current, Base);
 

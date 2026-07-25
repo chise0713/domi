@@ -23,22 +23,26 @@ impl<S: AsRef<str>> From<S> for Attribute {
     }
 }
 
-impl From<Entry> for proto::Domain {
-    fn from(entry: Entry) -> Self {
+impl TryFrom<Entry> for proto::Domain {
+    type Error = Entry;
+
+    fn try_from(entry: Entry) -> Result<Self, Self::Error> {
         let Kind::Domain(kind) = entry.kind else {
-            unreachable!("not a domain kind");
+            return Err(entry);
         };
+
         let typ = match kind {
             DomainKind::Suffix => Type::RootDomain,
             DomainKind::Full => Type::Full,
             DomainKind::Keyword => Type::Plain,
             DomainKind::Regex => Type::Regex,
         };
-        Self {
+
+        Ok(Self {
             r#type: typ.into(),
             value: entry.value.to_string(),
             attribute: entry.attrs.iter().map(Attribute::from).collect(),
-        }
+        })
     }
 }
 
@@ -49,7 +53,9 @@ impl From<FlatDomains> for GeoSite {
             domain: flat
                 .into_vec()
                 .into_iter()
-                .map(proto::Domain::from)
+                .map(|entry| {
+                    proto::Domain::try_from(entry).expect("FlatDomains invariant violated")
+                })
                 .collect(),
         }
     }
