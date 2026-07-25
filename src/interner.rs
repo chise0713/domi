@@ -232,7 +232,12 @@ define_pools! {
 impl BasePool {
     #[inline]
     pub(crate) fn base_id(value: &str) -> Option<InternId> {
-        POOL_STATE.with_borrow(|p| p.base.intern_id(value))
+        POOL_STATE.with_borrow(|p| {
+            if p.used_count == 0 {
+                missing_pool()
+            }
+            p.base.intern_id(value)
+        })
     }
 }
 
