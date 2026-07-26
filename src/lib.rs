@@ -66,7 +66,7 @@ cfg_if! {
     }
 }
 
-/// Represents the matching behavior
+/// Represents the matching behavior.
 ///
 /// This corresponds to the prefix of a single domain in the source file
 /// (e.g. `domain:`, `full:`, `keyword:`, `regexp:`).
@@ -108,7 +108,7 @@ impl Display for Kind {
     }
 }
 
-/// Single parsed entry
+/// Single parsed entry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Entry {
     pub kind: Kind,
@@ -340,10 +340,10 @@ impl Include {
     }
 }
 
-/// Parsed entries from source
+/// Collection of parsed entries.
 ///
-/// This type owns all parsed domains and include directives
-/// for a given base.
+/// This type owns all parsed bases, domains, and include directives
+/// produced during parsing.
 ///
 /// While an [`Entries`] value is alive, internal string intern pools are kept alive.
 /// They are automatically cleared when the last [`Entries`] is dropped on the thread.
@@ -784,7 +784,7 @@ mod flatten {
     }
 }
 
-/// Filtering behavior. Used by [`Entries::flatten`]
+/// Filtering behavior. Used by [`Entries::flatten`].
 pub enum AttrFilter<'a> {
     Has(&'a str),
     Lacks(&'a str),
@@ -803,7 +803,7 @@ iterator_wrapper! {
     pub struct Batch(Entry);
 }
 
-/// Domain entries flattened by [`Entries::flatten`]
+/// Domain entries flattened by [`Entries::flatten`].
 #[derive(Debug, Clone)]
 pub struct FlatDomains {
     base: Rc<str>,

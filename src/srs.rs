@@ -1,4 +1,4 @@
-//! Adapter for [sing-box rule-set source format](https://sing-box.sagernet.org/configuration/rule-set/source-format)
+//! Adapter for [sing-box rule-set source format](https://sing-box.sagernet.org/configuration/rule-set/source-format).
 
 use serde::Serialize;
 

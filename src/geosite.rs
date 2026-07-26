@@ -1,5 +1,5 @@
 //! Adaptor for
-//! [v2ray geosite](https://github.com/v2fly/v2ray-core/blob/master/app/router/routercommon/common.proto)
+//! [v2ray geosite](https://github.com/v2fly/v2ray-core/blob/master/app/router/routercommon/common.proto).
 //!
 //! This module contains some `impl From<A> for B`, refer to the source file
 pub mod proto {
