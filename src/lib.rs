@@ -394,6 +394,7 @@ impl Entries {
     /// [`Entries::parse_include`] already avoids duplicate insertion, so
     /// checking beforehand is unnecessary unless include parsing itself is
     /// expensive (such as network-backed IO).
+    #[inline]
     #[track_caller]
     pub fn is_included(&self, candidate: &str) -> bool {
         let Some(id) = BasePool::base_id(candidate) else {
@@ -424,6 +425,7 @@ impl Entries {
         self.parse_extend_inner(id, content);
     }
 
+    #[inline]
     fn extend_for_each(
         entry: Entry,
         node: &mut BaseEntries,
@@ -470,16 +472,16 @@ impl Entries {
 
     /// Returns `true` if the specified base exists.
     #[inline]
-    pub fn contains_base<S: AsRef<str>>(&self, base: S) -> bool {
-        self.bases.contains_key(base.as_ref())
+    pub fn contains_base(&self, base: &str) -> bool {
+        self.bases.contains_key(base)
     }
 
     /// Removes the specified base, including all entries and includes.
     ///
     /// Returns `true` if the base existed.
     #[inline]
-    pub fn remove_base<S: AsRef<str>>(&mut self, base: S) -> bool {
-        self.bases.remove(base.as_ref()).is_some()
+    pub fn remove_base(&mut self, base: &str) -> bool {
+        self.bases.remove(base).is_some()
     }
 
     fn pop_helper<F>(&mut self, mut cmp: F) -> bool

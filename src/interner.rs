@@ -287,6 +287,7 @@ impl PoolGuard {
 }
 
 impl Default for PoolGuard {
+    #[inline]
     fn default() -> Self {
         Self::acquire()
     }
