@@ -1,35 +1,5 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
-//! domi provides abstractions and utilities for
-//! [domain-list-community](https://github.com/v2fly/domain-list-community)
-//! data source.
-//!
-//!
-//! ## Example
-//! ```rust,no_run
-//! use std::{fs, path::Path};
-//!
-//! use domi::Entries;
-//!
-//! const BASE: &str = "alphabet";
-//!
-//! fn main() {
-//!     let data_root = Path::new("data");
-//!
-//!     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
-//!
-//!     let mut entries = Entries::parse(BASE, content.lines());
-//!
-//!     while let Some(i) = entries.next_include() {
-//!         if entries.is_included(i.target()) {
-//!             continue;
-//!         }
-//!         let include = fs::read_to_string(data_root.join(i.target())).unwrap();
-//!         entries.parse_include(i.target(), include.lines());
-//!     }
-//!
-//!     println!("{:?}", entries)
-//! }
-//! ```
+#![doc = include_str!("../README.md")]
 
 #[cfg(feature = "prost")]
 pub mod geosite;
@@ -388,22 +358,6 @@ impl Entries {
         self.parse_extend_inner(id, content);
     }
 
-    /// Returns whether `candidate` has already been included.
-    ///
-    /// This is a performance helper only.
-    /// [`Entries::parse_include`] already avoids duplicate insertion, so
-    /// checking beforehand is unnecessary unless include parsing itself is
-    /// expensive (such as network-backed IO).
-    #[inline]
-    #[track_caller]
-    pub fn is_included(&self, candidate: &str) -> bool {
-        let Some(id) = BasePool::base_id(candidate) else {
-            return false;
-        };
-
-        self.parsed_id.contains(&id)
-    }
-
     /// Parses and appends entries to the specified base if it has not already
     /// been parsed.
     ///
@@ -423,6 +377,42 @@ impl Entries {
         };
 
         self.parse_extend_inner(id, content);
+    }
+
+    /// Parses and appends entries to the specified base if it has not already
+    /// been parsed.
+    ///
+    /// Unlike [`Entries::parse_include`], this function defers loading the content
+    /// until it is confirmed that the base has not already been parsed. This is
+    /// useful when obtaining the content is expensive, such as filesystem or
+    /// network-backed IO.
+    ///
+    /// The `content_fn` closure is invoked at most once and only when parsing is
+    /// required.
+    ///
+    /// # Panics
+    ///
+    /// Propagates any panic raised by `content_fn`. Note that `content_fn` is
+    /// invoked only if `current` has not already been parsed.
+    #[inline]
+    #[track_caller]
+    pub fn parse_include_with<F, S>(&mut self, current: &str, content_fn: F)
+    where
+        F: FnOnce() -> S,
+        S: AsRef<str>,
+    {
+        let id = intern!(current, Base);
+
+        if !self
+            .parsed_id
+            // Safety: This uses `intern!()` macro, it's guaranteed return a interned `Rc<T>`
+            .insert(unsafe { InternId::from_interned(&id) })
+        {
+            return;
+        };
+
+        let content = content_fn();
+        self.parse_extend_inner(id, content.as_ref().lines());
     }
 
     #[inline]

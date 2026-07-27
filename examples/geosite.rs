@@ -13,11 +13,9 @@ fn main() {
     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
     let mut entries = Entries::parse(BASE, content.lines());
     while let Some(i) = entries.next_include() {
-        if entries.is_included(i.target()) {
-            continue;
-        }
-        let include = fs::read_to_string(data_root.join(i.target())).unwrap();
-        entries.parse_include(i.target(), include.lines());
+        entries.parse_include_with(i.target(), || {
+            fs::read_to_string(data_root.join(i.target())).unwrap()
+        });
     }
     // change the `Some(&[AttrFilter::Lacks("attr2")])` to something else can alter behavier,
     // see crate::Entries

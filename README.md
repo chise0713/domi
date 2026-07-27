@@ -17,11 +17,9 @@ fn main() {
     let mut entries = Entries::parse(BASE, content.lines());
 
     while let Some(i) = entries.next_include() {
-        if entries.is_included(i.target()) {
-            continue;
-        }
-        let include = fs::read_to_string(data_root.join(i.target())).unwrap();
-        entries.parse_include(i.target(), include.lines());
+        entries.parse_include_with(i.target(), || {
+            fs::read_to_string(data_root.join(i.target())).unwrap()
+        });
     }
 
     println!("{:?}", entries)
@@ -34,8 +32,8 @@ find more examples at [examples/](examples/)
 
 Licensed under either of
 
- * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+ * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+ * MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
 
 at your option.
 

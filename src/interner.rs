@@ -50,13 +50,6 @@ where
         self.set.get(value).cloned()
     }
 
-    // reduce inc, dec ref count
-    #[inline]
-    fn intern_id(&self, value: &T) -> Option<InternId> {
-        // Safety: it's from interner
-        Some(unsafe { InternId::from_interned(self.set.get(value)?) })
-    }
-
     #[inline]
     fn clear(&mut self) {
         self.set.clear();
@@ -227,18 +220,6 @@ define_pools! {
     Attr: str,
     DomainValue: str,
     AttrSlice: [Rc<str>],
-}
-
-impl BasePool {
-    #[inline]
-    pub(crate) fn base_id(value: &str) -> Option<InternId> {
-        POOL_STATE.with_borrow(|p| {
-            if p.used_count == 0 {
-                missing_pool()
-            }
-            p.base.intern_id(value)
-        })
-    }
 }
 
 #[cfg(test)]
@@ -476,20 +457,6 @@ mod tests {
         let b = BasePool::base_ref("abc").unwrap();
 
         assert!(Rc::ptr_eq(&a, &b));
-    }
-
-    #[test]
-    fn intern_id() {
-        let _pg = PoolGuard::acquire();
-
-        BasePool::base(Rc::from("abc"));
-
-        let a = BasePool::base_id("abc").unwrap();
-        let b = BasePool::base_id("abc").unwrap();
-
-        assert_eq!(a, b);
-
-        assert!(BasePool::base_id("def").is_none());
     }
 
     #[test]
