@@ -2,7 +2,7 @@
 domi provides abstractions and utilities for [domain-list-community](https://github.com/v2fly/domain-list-community) data source.
 
 ## Example
-```rust
+```rust,no_run
 use std::{fs, path::Path};
 
 use domi::Entries;
