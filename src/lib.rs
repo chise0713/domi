@@ -705,6 +705,7 @@ mod flatten {
             .cmp(&b.kind)
             .reverse()
             .then_with(|| a.value.cmp(&b.value))
+            .then_with(|| a.attrs.cmp(&b.attrs))
     }
 
     #[inline]
@@ -1088,6 +1089,29 @@ mod tests {
 
         assert_ne!(flat[1].attrs, flat[2].attrs);
         assert_eq!(&*flat[2].attrs, ["attr1".into()]);
+    }
+
+    #[test]
+    fn attrs_sort() {
+        let content = "\
+            domain:domain @attr2
+            domain:domain @attr1
+            domain:domain @attr3
+        ";
+
+        let entries = Entries::parse(BASE, content.lines());
+
+        let flat = entries.flatten(BASE, None).unwrap().into_vec();
+
+        assert_eq!(flat.len(), 3);
+
+        for entry in &flat {
+            assert_eq!(entry.kind, Kind::Domain(DomainKind::Suffix));
+            assert_eq!(&*entry.value, "domain");
+        }
+
+        let attrs = std::array::from_fn(|i| &*flat[i].attrs[0]);
+        assert_eq!(attrs, ["attr1", "attr2", "attr3"]);
     }
 
     #[test]
