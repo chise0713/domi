@@ -30,7 +30,7 @@ fn bench_parse(c: &mut Criterion, dataset: &[(String, String)]) {
             let mut entries = Entries::default();
 
             for (name, content) in dataset {
-                entries.parse_include(name, content.lines());
+                entries.parse_include(name, content);
             }
 
             black_box(entries);
@@ -42,7 +42,7 @@ fn bench_flatten(c: &mut Criterion, dataset: &[(String, String)]) {
     let mut entries = Entries::default();
 
     for (name, content) in dataset {
-        entries.parse_include(name, content.lines());
+        entries.parse_include(name, content);
     }
 
     c.bench_function("flatten", |b| {
@@ -64,7 +64,7 @@ fn bench_full(c: &mut Criterion, dataset: &[(String, String)]) {
             let mut entries = Entries::default();
 
             for (name, content) in dataset {
-                entries.parse_include(name, content.lines());
+                entries.parse_include(name, content);
             }
 
             let mut out = Vec::new();

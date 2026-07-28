@@ -12,7 +12,7 @@ fn main() {
         if e.file_type().unwrap().is_file() {
             let name = e.file_name().into_string().unwrap();
             let include = fs::read_to_string(data_root.join(&name)).unwrap();
-            entries.parse_include(&name, include.lines());
+            entries.parse_include(&name, include);
         }
     }
 

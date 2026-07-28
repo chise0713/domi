@@ -106,11 +106,11 @@ mod tests {
             ("base1", "keyword:keyword"), // base (country_code) ord test
             ("base2", "regexp:regexp"),   // dedup
         ];
-        let mut entries = crate::Entries::parse("base0", "full:full".lines());
+        let mut entries = crate::Entries::parse("base0", "full:full");
         assert_eq!(
             pairs
                 .iter()
-                .map(|(base, content)| entries.parse_include(base, content.lines()))
+                .map(|(base, content)| entries.parse_include(base, content))
                 .count(),
             3
         );

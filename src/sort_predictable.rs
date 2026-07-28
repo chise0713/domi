@@ -17,7 +17,7 @@ where
     C: FnMut(&T) -> K,
 {
     let list: [T; VARIANT_LEN] = std::array::from_fn(|i| {
-        let domains = Entries::parse(BASE, CONTENS[i].lines())
+        let domains = Entries::parse(BASE, CONTENS[i])
             .flatten(BASE, None)
             .unwrap();
 

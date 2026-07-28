@@ -14,7 +14,6 @@ use std::{
     iter::{self, FusedIterator},
     ops::Deref,
     rc::Rc,
-    str::Lines,
 };
 
 use cfg_if::cfg_if;
@@ -341,16 +340,18 @@ pub struct Entries {
 impl Entries {
     #[inline]
     #[track_caller]
-    pub fn parse(base: &str, content: Lines) -> Self {
+    pub fn parse<S: AsRef<str>>(base: &str, content: S) -> Self {
         let mut ret = Self::default();
         ret.parse_include(base, content);
         ret
     }
 
-    fn parse_extend_inner(&mut self, id: Rc<str>, content: Lines) {
+    fn parse_extend_inner<S: AsRef<str>>(&mut self, id: Rc<str>, content: S) {
         let node = self.bases.entry(id.clone()).or_default();
 
         content
+            .as_ref()
+            .lines()
             .filter_map(|line| {
                 // Safety:
                 // `line` comes from `Lines`, which guarantees no `\n` or `\r`.
@@ -366,7 +367,7 @@ impl Entries {
     /// base appends additional entries.
     #[inline]
     #[track_caller]
-    pub fn parse_extend(&mut self, current: &str, content: Lines) {
+    pub fn parse_extend<S: AsRef<str>>(&mut self, current: &str, content: S) {
         let id = intern!(current, Base);
         self.parse_extend_inner(id, content);
     }
@@ -378,7 +379,7 @@ impl Entries {
     /// calls with the same base are ignored.
     #[inline]
     #[track_caller]
-    pub fn parse_include(&mut self, current: &str, content: Lines) {
+    pub fn parse_include<S: AsRef<str>>(&mut self, current: &str, content: S) {
         let id = intern!(current, Base);
 
         if !self
@@ -425,7 +426,7 @@ impl Entries {
         };
 
         let content = content_fn();
-        self.parse_extend_inner(id, content.as_ref().lines());
+        self.parse_extend_inner(id, content);
     }
 
     #[inline]
@@ -987,8 +988,7 @@ mod tests {
             "\
         include:something # includes won't be taken
         example.com
-        "
-            .lines(),
+        ",
         );
 
         let taken = entries.take();
@@ -1001,8 +1001,8 @@ mod tests {
 
     #[test]
     fn pop_domain() {
-        let mut entries = Entries::parse(BASE, "example.com".lines());
-        let entry = &Entries::parse(BASE, "example.com".lines()).take()[0];
+        let mut entries = Entries::parse(BASE, "example.com");
+        let entry = &Entries::parse(BASE, "example.com").take()[0];
         assert!(entries.pop(entry));
     }
 
@@ -1017,7 +1017,7 @@ mod tests {
             domain:domain.full.com # will stay
         ";
 
-        let entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content);
 
         let flat = entries.flatten(BASE, None).unwrap();
         let flat_domains = flat.into_vec();
@@ -1045,7 +1045,7 @@ mod tests {
             regexp:regexp
         ";
 
-        let entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content);
 
         let mut flat = entries.flatten(BASE, None).unwrap();
 
@@ -1077,7 +1077,7 @@ mod tests {
             full:full @attr1 # no dedup
         ";
 
-        let entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content);
 
         let flat = entries.flatten(BASE, None).unwrap().into_vec();
 
@@ -1102,7 +1102,7 @@ mod tests {
             domain:domain @attr3
         ";
 
-        let entries = Entries::parse(BASE, content.lines());
+        let entries = Entries::parse(BASE, content);
 
         let flat = entries.flatten(BASE, None).unwrap().into_vec();
 
@@ -1138,12 +1138,12 @@ mod tests {
     fn attr_test_helper(content: &[&str], expected: Entry) {
         const BASE: &str = "content_1";
 
-        let mut entries = Entries::parse(BASE, content[0].lines());
+        let mut entries = Entries::parse(BASE, content[0]);
 
         let mut next = 1;
 
         while let Some(i) = entries.next_include() {
-            entries.parse_include(i.target(), content[next].lines());
+            entries.parse_include(i.target(), content[next]);
             next += 1;
         }
 
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[test]
     fn base_operation() {
-        let mut entries = Entries::parse("base0", "".lines());
+        let mut entries = Entries::parse("base0", "");
 
         assert!(entries.contains_base("base0"));
 
@@ -1244,7 +1244,7 @@ mod tests {
 
     #[test]
     fn include_paired_with_base_operation() {
-        let mut entries = Entries::parse("base0", "include:base1".lines());
+        let mut entries = Entries::parse("base0", "include:base1");
 
         assert!(entries.contains_base("base0"));
 
@@ -1256,7 +1256,7 @@ mod tests {
 
         //
 
-        let mut entries = Entries::parse("base0", "include:base1".lines());
+        let mut entries = Entries::parse("base0", "include:base1");
 
         assert!(entries.contains_base("base0"));
 
@@ -1269,8 +1269,8 @@ mod tests {
 
         //
 
-        let mut entries = Entries::parse("base0", "include:base1".lines());
-        entries.parse_include("base1", "include:base2".lines());
+        let mut entries = Entries::parse("base0", "include:base1");
+        entries.parse_include("base1", "include:base2");
 
         assert!(entries.contains_base("base0"));
 

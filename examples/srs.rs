@@ -10,7 +10,7 @@ const BASE: &str = "alphabet";
 fn main() {
     let data_root = Path::new("data");
     let content = fs::read_to_string(data_root.join(BASE)).unwrap();
-    let mut entries = Entries::parse(BASE, content.lines());
+    let mut entries = Entries::parse(BASE, content);
     while let Some(i) = entries.next_include() {
         entries.parse_include_with(i.target(), || {
             fs::read_to_string(data_root.join(i.target())).unwrap()

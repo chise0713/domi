@@ -81,8 +81,7 @@ mod tests {
             "\
         domain:abc
         domain:abc @attr1
-        "
-            .lines(),
+        ",
         );
 
         let rule = Rule::from(entries.flatten(BASE, None).unwrap());
@@ -97,7 +96,7 @@ mod tests {
             keyword:keyword # dedup
         ";
 
-        let entries = Entries::parse(BASE, CONTENT.lines());
+        let entries = Entries::parse(BASE, CONTENT);
         let flattened = entries.flatten(BASE, None).unwrap();
         let rule_set = RuleSet::from_iter([Rule::from(flattened)]);
         assert_eq!(rule_set.rules.len(), 1);
