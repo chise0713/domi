@@ -281,9 +281,15 @@ iterator_wrapper! {
 #[derive(Debug, Default)]
 struct BaseEntries {
     normal: Vec<Entry>,
-    includes: Vec<Include>,
+    includes: Vec<RawInclude>,
     next_include: usize,
     queued: bool,
+}
+
+#[derive(Debug)]
+struct RawInclude {
+    target: Rc<str>,
+    attrs: AttrFilterSlice,
 }
 
 /// An include directive discovered during parsing.
@@ -293,7 +299,6 @@ struct BaseEntries {
 #[derive(Debug, Clone)]
 pub struct Include {
     target: Rc<str>,
-    attrs: AttrFilterSlice,
 }
 
 impl Include {
@@ -307,6 +312,14 @@ impl Include {
     #[inline]
     pub fn target(&self) -> &str {
         &self.target
+    }
+}
+
+impl From<&RawInclude> for Include {
+    fn from(include: &RawInclude) -> Self {
+        Self {
+            target: include.target.clone(),
+        }
     }
 }
 
@@ -441,7 +454,7 @@ impl Entries {
             }
         };
 
-        node.includes.push(Include {
+        node.includes.push(RawInclude {
             target: entry.value,
             attrs: entry.attrs.iter().map(map).collect(),
         });
@@ -531,7 +544,7 @@ impl Entries {
                 continue;
             };
 
-            out.extend(node.includes[node.next_include..].iter().cloned());
+            out.extend(node.includes[node.next_include..].iter().map(Include::from));
 
             node.next_include = node.includes.len();
             node.queued = false;
@@ -549,7 +562,7 @@ impl Entries {
                 continue;
             };
 
-            let include = node.includes[node.next_include].clone();
+            let include = &node.includes[node.next_include];
             node.next_include += 1;
 
             if node.next_include == node.includes.len() {
@@ -558,7 +571,7 @@ impl Entries {
                 self.include_queue.push_front(id);
             }
 
-            return Some(include);
+            return Some(Include::from(include));
         }
 
         None
